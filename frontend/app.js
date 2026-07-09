@@ -147,7 +147,16 @@
     el.submit.classList.add("is-done");
     const name = (data && data.profile && data.profile.name) || "";
     const greet = mode === "login" ? "مرحباً بعودتك" : "تم إنشاء حسابك";
-    showMessage(name ? `${greet}، ${name} 🎉` : `${greet} 🎉`, "ok");
+    showMessage(name ? `${greet}، ${name} — جارٍ التحويل…` : "جارٍ التحويل…", "ok");
+    // Carry the authenticated identity to the chat page and redirect.
+    try {
+      sessionStorage.setItem("iug_auth", JSON.stringify({
+        student_id: (data && data.student_id) || el.id.value,
+        name: name,
+        profile: (data && data.profile) || {},
+      }));
+    } catch (_) {}
+    setTimeout(() => { window.location.href = "chat.html"; }, 900);
   }
 
   function onFailure(status, data) {

@@ -1,0 +1,114 @@
+/* ============================================================
+   المساعد الجامعي — chat UI (shares :root theme from styles.css)
+   ============================================================ */
+.chat-body { display:block; }
+
+.chat {
+  position:relative; z-index:1;
+  display:flex; flex-direction:column;
+  width:min(100%,760px);
+  height:100dvh; margin:0 auto;
+  padding:clamp(10px,2vw,18px);
+  gap:12px;
+}
+
+/* ---------- Header ---------- */
+.chat__bar {
+  display:flex; align-items:center; gap:12px;
+  padding:12px 16px; border-radius:16px;
+  animation:cardIn .6s var(--ease) both;
+}
+.chat__crest {
+  display:grid; place-items:center; width:42px; height:42px; flex:none;
+  border-radius:12px; border:1px solid var(--line-strong);
+  background:radial-gradient(circle at 50% 30%, rgba(212,175,55,.20), rgba(212,175,55,.04));
+}
+.chat__id { display:flex; flex-direction:column; line-height:1.35; margin-inline-end:auto; }
+.chat__title { font-size:15px; font-weight:800; color:var(--cream); }
+.chat__sub { font-size:12.5px; color:var(--gold); opacity:.85; }
+.chat__logout {
+  display:grid; place-items:center; width:40px; height:40px; flex:none;
+  background:rgba(255,255,255,.05); border:1px solid var(--line); border-radius:11px;
+  cursor:pointer; transition:background .25s, border-color .25s, transform .15s;
+}
+.chat__logout svg { width:19px; height:19px; fill:var(--cream-dim); transition:fill .25s; }
+.chat__logout:hover { background:rgba(255,143,143,.10); border-color:rgba(255,143,143,.4); }
+.chat__logout:hover svg { fill:var(--danger); }
+.chat__logout:active { transform:scale(.94); }
+
+/* ---------- Messages ---------- */
+.chat__scroll {
+  flex:1; overflow-y:auto; overflow-x:hidden;
+  display:flex; flex-direction:column; gap:14px;
+  padding:8px 4px 4px;
+  scrollbar-width:thin; scrollbar-color:var(--line) transparent;
+}
+.chat__scroll::-webkit-scrollbar { width:6px; }
+.chat__scroll::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
+
+.msg { display:flex; gap:10px; max-width:88%; align-items:flex-end; }
+.msg--bot { align-self:flex-start; }
+.msg--me  { align-self:flex-end; flex-direction:row-reverse; }
+
+.msg__ava {
+  flex:none; width:32px; height:32px; border-radius:10px;
+  display:grid; place-items:center; font-size:15px;
+  background:radial-gradient(circle at 50% 30%, rgba(212,175,55,.25), rgba(212,175,55,.05));
+  border:1px solid var(--line-strong); color:var(--gold);
+}
+.msg__bubble {
+  padding:12px 15px; border-radius:16px; font-size:15px; line-height:1.75;
+  white-space:pre-wrap; word-break:break-word;
+  animation:pop .35s var(--ease) both;
+}
+.msg--bot .msg__bubble {
+  background:var(--glass-2); border:1px solid var(--line);
+  border-bottom-right-radius:5px; color:var(--cream);
+}
+.msg--me .msg__bubble {
+  background:linear-gradient(180deg,var(--gold-hi),var(--gold));
+  color:#241c05; font-weight:600; border-bottom-left-radius:5px;
+  box-shadow:0 8px 20px -10px rgba(212,175,55,.6);
+}
+@keyframes pop { from { opacity:0; transform:translateY(8px) scale(.98); } to { opacity:1; transform:none; } }
+
+/* typing indicator */
+.msg__typing { display:flex; gap:5px; padding:14px 16px; }
+.msg__typing span { width:7px; height:7px; border-radius:50%; background:var(--gold); opacity:.6;
+  animation:blink 1.2s var(--ease) infinite; }
+.msg__typing span:nth-child(2){ animation-delay:.18s; }
+.msg__typing span:nth-child(3){ animation-delay:.36s; }
+@keyframes blink { 0%,60%,100%{ transform:translateY(0); opacity:.5;} 30%{ transform:translateY(-4px); opacity:1;} }
+
+/* suggestion chips */
+.chips { display:flex; flex-wrap:wrap; gap:8px; padding:2px 4px 8px; }
+.chip {
+  font-family:inherit; font-size:13px; color:var(--cream-dim);
+  background:rgba(255,255,255,.04); border:1px solid var(--line);
+  border-radius:999px; padding:9px 14px; cursor:pointer;
+  transition:all .25s var(--ease);
+}
+.chip:hover { color:#241c05; background:linear-gradient(180deg,var(--gold-hi),var(--gold));
+  border-color:transparent; transform:translateY(-1px); }
+
+/* ---------- Composer ---------- */
+.composer {
+  display:flex; align-items:center; gap:8px;
+  padding:8px 8px 8px 10px; border-radius:16px;
+}
+.composer input {
+  flex:1; min-width:0; background:none; border:0; outline:0;
+  font-family:inherit; font-size:16px; color:var(--cream); padding:12px 8px;
+}
+.composer input::placeholder { color:rgba(198,190,175,.42); }
+.composer__send {
+  flex:none; width:46px; height:46px; border:0; border-radius:13px; cursor:pointer;
+  display:grid; place-items:center;
+  background:linear-gradient(180deg,var(--gold-hi),var(--gold) 60%,var(--gold-lo));
+  box-shadow:0 10px 22px -10px rgba(212,175,55,.7);
+  transition:transform .15s var(--ease), box-shadow .25s, opacity .2s;
+}
+.composer__send svg { width:20px; height:20px; fill:#241c05; }
+.composer__send:hover:not(:disabled) { transform:translateY(-2px) scale(1.04); }
+.composer__send:active:not(:disabled) { transform:scale(.95); }
+.composer__send:disabled { opacity:.5; cursor:default; }
