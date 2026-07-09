@@ -6,7 +6,7 @@ so the OpenAPI docs (/docs) are always accurate and the frontend can generate
 typed clients directly from them.
 """
 
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -139,7 +139,26 @@ class MessageResponse(BaseModel):
     message: str
 
 
-class ErrorResponse(BaseModel):
-    """Uniform error body (also what HTTPException renders as)."""
+class ErrorDetail(BaseModel):
+    code: str = Field(description="رمز آلي ثابت للخطأ، مثل NOT_FOUND / VALIDATION_ERROR.")
+    message: str = Field(description="رسالة عربية واضحة للمستخدم.")
+    details: Optional[Any] = Field(
+        default=None,
+        description="تفاصيل إضافية: نص، أو قائمة أخطاء حقول [{field, message}] للتحقّق.",
+    )
+    timestamp: str = Field(description="وقت الخطأ (ISO 8601, UTC).")
+    path: str = Field(description="مسار الطلب الذي أنتج الخطأ.")
 
-    detail: str
+
+class FieldError(BaseModel):
+    """One field-level validation error (shape used inside details)."""
+
+    field: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    """Unified error envelope returned by EVERY failing endpoint."""
+
+    success: bool = Field(default=False, description="دائماً false في الأخطاء.")
+    error: ErrorDetail

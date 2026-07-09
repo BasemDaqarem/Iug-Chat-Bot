@@ -7,12 +7,16 @@ FastAPI runs sync routes in its threadpool, so one slow LLM call never blocks
 the event loop or other requests.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
 from app.api.deps import get_bot
+from app.api.errors import NotFoundError
 from app.api.schemas import ChatRequest, ChatResponse, ErrorResponse
 from app.chatbot import IUGChatbot
 
+# Upstream failures (LLM / embeddings) raise UpstreamServiceError inside the
+# pipeline and are turned into a clean 502 by the centralized error handler —
+# routes stay free of try/except plumbing.
 router = APIRouter(
     prefix="/chat",
     tags=["Chat"],
@@ -20,17 +24,6 @@ router = APIRouter(
         502: {"model": ErrorResponse, "description": "خطأ من خدمة خارجية (LLM/Embeddings)"},
     },
 )
-
-
-def _run(chat_callable, *args) -> ChatResponse:
-    """Shared execution: translate pipeline failures (LLM / embeddings /
-    network, raised as RuntimeError by app.llm / app.embeddings) into a
-    clean 502 that carries the underlying provider's own reason."""
-    try:
-        result = chat_callable(*args)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-    return ChatResponse(**result)
 
 
 @router.post(
@@ -44,7 +37,7 @@ def _run(chat_callable, *args) -> ChatResponse:
     ),
 )
 def chat(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
-    return _run(bot.chat, body.question, body.session_id)
+    return ChatResponse(**bot.chat(body.question, body.session_id))
 
 
 @router.post(
@@ -57,7 +50,7 @@ def chat(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
     ),
 )
 def chat_all_files(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
-    return _run(bot.chat_with_all_files, body.question, body.session_id)
+    return ChatResponse(**bot.chat_with_all_files(body.question, body.session_id))
 
 
 @router.post(
@@ -74,8 +67,5 @@ def chat_one_file(
 ) -> ChatResponse:
     files = {f["collection"] for f in bot.get_uploaded_files_list()}
     if collection_name not in files:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"الملف '{collection_name}' غير موجود. ارفعه أولاً.",
-        )
-    return _run(bot.chat_with_file, body.question, collection_name, body.session_id)
+        raise NotFoundError(f"الملف '{collection_name}' غير موجود. ارفعه أولاً.")
+    return ChatResponse(**bot.chat_with_file(body.question, collection_name, body.session_id))

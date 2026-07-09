@@ -1,8 +1,9 @@
 """Uploaded-files management — list / upload / reload / delete."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
 from app.api.deps import get_bot
+from app.api.errors import BadRequestError, NotFoundError, UpstreamError
 from app.api.schemas import (
     ErrorResponse,
     FileInfo,
@@ -50,7 +51,7 @@ def upload_file(
     try:
         result = bot.upload_json_file(collection_name, body.documents)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        raise BadRequestError(str(exc))
     indexed = any(
         f["collection"] == collection_name and f["indexed"]
         for f in bot.get_uploaded_files_list()
@@ -67,16 +68,10 @@ def upload_file(
 )
 def reload_file(collection_name: str, bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
     if collection_name not in _file_names(bot):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"الملف '{collection_name}' غير موجود.",
-        )
+        raise NotFoundError(f"الملف '{collection_name}' غير موجود.")
     ok = bot.reload_uploaded_file(collection_name)
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"فشلت إعادة فهرسة '{collection_name}'.",
-        )
+        raise UpstreamError(f"فشلت إعادة فهرسة '{collection_name}' — تعذّر بناء الفهرس.")
     return MessageResponse(message=f"تمت إعادة فهرسة '{collection_name}'.")
 
 
@@ -89,9 +84,6 @@ def reload_file(collection_name: str, bot: IUGChatbot = Depends(get_bot)) -> Mes
 )
 def delete_file(collection_name: str, bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
     if collection_name not in _file_names(bot):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"الملف '{collection_name}' غير موجود.",
-        )
+        raise NotFoundError(f"الملف '{collection_name}' غير موجود.")
     bot.delete_uploaded_file(collection_name)
     return MessageResponse(message=f"تم حذف '{collection_name}'.")

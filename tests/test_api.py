@@ -10,6 +10,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from app.api import create_app
+from app.errors import UpstreamServiceError
 
 
 class FakeBot:
@@ -21,11 +22,14 @@ class FakeBot:
         self.data = {"programs": [{"name": "هندسة"}]}
         self.chunks = ["c1", "c2", "c3"]
         self.fail_next_chat = False
+        self.crash_next_chat = False
 
     # chat flows ----------------------------------------------------------
     def _answer(self, question, session_id, source):
+        if self.crash_next_chat:
+            raise KeyError("boom")  # an unexpected bug → must become a clean 500
         if self.fail_next_chat:
-            raise RuntimeError("❌ تعذّر الاتصال بـ Groq API")
+            raise UpstreamServiceError("❌ openrouter.ai رفض الطلب (HTTP 502): upstream down")
         self.history.setdefault(session_id, []).append(
             {"user": question, "assistant": "إجابة"})
         return {"answer": "إجابة", "top_chunks": ["مقطع"], "source": source}
@@ -128,7 +132,10 @@ class TestChat(ApiBase):
         self.bot.fail_next_chat = True
         r = self.client.post("/api/chat", json={"question": "سؤال؟", "session_id": "s1"})
         self.assertEqual(r.status_code, 502)
-        self.assertIn("Groq", r.json()["detail"])
+        body = r.json()
+        self.assertFalse(body["success"])
+        self.assertEqual(body["error"]["code"], "UPSTREAM_ERROR")
+        self.assertIn("openrouter.ai", body["error"]["message"])
 
 
 class TestFiles(ApiBase):
@@ -177,6 +184,53 @@ class TestSessions(ApiBase):
 
         self.client.delete("/api/sessions/s1/history")
         self.assertEqual(self.client.get("/api/sessions/s1/history").json()["count"], 0)
+
+
+class TestErrorEnvelope(ApiBase):
+    """Every failing endpoint returns the SAME unified envelope."""
+
+    def _assert_envelope(self, body, code, path):
+        self.assertFalse(body["success"])
+        err = body["error"]
+        self.assertEqual(err["code"], code)
+        self.assertTrue(err["message"])                 # non-empty, human-readable
+        self.assertEqual(err["path"], path)
+        self.assertIn("T", err["timestamp"])            # ISO-8601
+        self.assertIn("code", err)                      # all keys present
+        self.assertIn("details", err)
+
+    def test_not_found_envelope(self):
+        r = self.client.delete("/api/files/مفقود")
+        self.assertEqual(r.status_code, 404)
+        self._assert_envelope(r.json(), "NOT_FOUND", "/api/files/مفقود")
+
+    def test_validation_envelope_lists_the_field(self):
+        r = self.client.post("/api/chat", json={"question": "", "session_id": "s"})
+        self.assertEqual(r.status_code, 422)
+        body = r.json()
+        self._assert_envelope(body, "VALIDATION_ERROR", "/api/chat")
+        fields = [d["field"] for d in body["error"]["details"]]
+        self.assertIn("question", fields)               # the offending field is named
+
+    def test_upstream_envelope(self):
+        self.bot.fail_next_chat = True
+        r = self.client.post("/api/chat/files", json={"question": "q", "session_id": "s"})
+        self.assertEqual(r.status_code, 502)
+        self._assert_envelope(r.json(), "UPSTREAM_ERROR", "/api/chat/files")
+
+    def test_unexpected_bug_becomes_clean_500(self):
+        # An unforeseen exception must NOT leak a stack trace — it becomes a
+        # uniform 500 envelope with a friendly message.
+        self.bot.crash_next_chat = True
+        client = TestClient(create_app(bot=self.bot), raise_server_exceptions=False)
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
+        r = client.post("/api/chat", json={"question": "q", "session_id": "s"})
+        self.assertEqual(r.status_code, 500)
+        body = r.json()
+        self._assert_envelope(body, "INTERNAL_ERROR", "/api/chat")
+        self.assertNotIn("Traceback", body["error"]["message"])
+        self.assertNotIn("KeyError", body["error"]["message"])  # message is friendly
 
 
 class TestDocs(ApiBase):
