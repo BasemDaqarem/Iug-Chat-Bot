@@ -54,6 +54,20 @@ def chat_all_files(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> Cha
 
 
 @router.post(
+    "/student",
+    response_model=ChatResponse,
+    summary="محادثة الطالب (تدمج ملفه الأكاديمي)",
+    description=(
+        "الواجهة بعد الدخول تستخدم هذه النقطة: أسئلة الطالب عن حالته/معدله/ترتيبه "
+        "تُجاب من ملفه الشخصي (بحثاً عن هويته في students_auth، فلا يرى إلا بياناته)؛ "
+        "وأي سؤال آخر يُجاب من محتوى الجامعة."
+    ),
+)
+def chat_student(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
+    return ChatResponse(**bot.chat_as_student(body.question, body.session_id))
+
+
+@router.post(
     "/files/{collection_name}",
     response_model=ChatResponse,
     summary="محادثة على ملف مرفوع واحد",
