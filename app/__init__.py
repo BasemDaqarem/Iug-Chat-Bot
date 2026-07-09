@@ -10,6 +10,7 @@ Feature map (each module owns exactly one responsibility):
     text_norm       → Arabic normalization + tokenization (for lexical search)
     lexical         → Okapi-BM25 lexical scorer
     embeddings      → Jina embeddings client + semantic-index construction
+    cache           → in-process TTL + LRU cache (query vectors, public answers)
     index_store     → on-disk persistence/cache for embedding indexes
     retrieval       → dense ranking + hybrid (dense + BM25 via RRF) ranking
     llm             → Groq chat-completion client (payload, retries, errors)

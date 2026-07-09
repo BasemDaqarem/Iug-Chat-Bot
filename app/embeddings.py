@@ -5,15 +5,30 @@ An "index" here is a float32 matrix of L2-normalized row vectors, so
 cosine similarity against a normalized query reduces to a dot product.
 """
 
+import hashlib
 from typing import List
 
 import numpy as np
 import requests
 
 from app import config
+from app.cache import TTLCache
 from app.log import get_logger
 
 log = get_logger("embeddings")
+
+# question text → its L2-normalized query vector. Deterministic for a fixed
+# embedding model, and the value is a vector (never an answer or a record), so
+# this is safe to reuse across users. Keyed by a hash so raw text is not stored.
+_query_cache = TTLCache("query_embeddings", config.CACHE_EMBED_MAXSIZE, config.CACHE_EMBED_TTL)
+
+
+def query_cache_stats() -> dict:
+    return _query_cache.stats()
+
+
+def reset_query_cache() -> None:
+    _query_cache.clear()
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
@@ -45,7 +60,20 @@ def build_index(chunks: List[str]) -> np.ndarray:
 
 
 def embed_query(question: str) -> np.ndarray:
-    """Embed a single query and L2-normalize it into a column vector."""
+    """Embed a single query and L2-normalize it into a column vector.
+    Result is cached per (model, question) so repeated questions skip the
+    Jina API call entirely."""
+    key = None
+    if config.CACHE_ENABLED:
+        key = hashlib.sha256(f"{config.EMBED_MODEL}\x00{question}".encode("utf-8")).hexdigest()
+        cached = _query_cache.get(key)
+        if cached is not None:
+            return cached
+
     q_arr = embed_texts([question])
     norm = np.linalg.norm(q_arr)
-    return (q_arr / norm if norm != 0 else q_arr).T
+    vec = (q_arr / norm if norm != 0 else q_arr).T
+
+    if key is not None:
+        _query_cache.set(key, vec)
+    return vec

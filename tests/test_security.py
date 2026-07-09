@@ -21,6 +21,7 @@ OTHER_STUDENT_MARKERS = ["سالم يوسف", "67890", "70.1"]
 class TestRetrievalIsolation(unittest.TestCase):
 
     def setUp(self):
+        embeddings.reset_query_cache()  # isolate the module-level query cache
         self.bot = IUGChatbot()
         data = copy.deepcopy(FIXTURE_DATA)
         self.bot._kb._data = data

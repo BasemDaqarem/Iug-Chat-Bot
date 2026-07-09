@@ -17,6 +17,7 @@ from tests.test_equivalence import FIXTURE_DATA, UPLOADED_DOCS, fake_embed
 class ChatBase(unittest.TestCase):
 
     def setUp(self):
+        embeddings.reset_query_cache()  # isolate the module-level query cache
         self.llm_calls = []
         self.bot = IUGChatbot()
 
