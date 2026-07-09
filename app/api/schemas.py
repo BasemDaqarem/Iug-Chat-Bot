@@ -114,6 +114,25 @@ class HealthResponse(BaseModel):
     embed_model: str = Field(description="نموذج الـ embeddings المستخدم للبحث.")
 
 
+class CacheStat(BaseModel):
+    """Runtime stats for one cache (see app.cache.TTLCache.stats)."""
+
+    name: str
+    size: int = Field(description="عدد المدخلات الحالية.")
+    maxsize: int
+    ttl_seconds: int
+    hits: int
+    misses: int
+    hit_rate: float = Field(description="hits / (hits + misses).")
+    evictions: int = Field(description="مدخلات أُزيلت لتجاوز الحجم (LRU).")
+    expirations: int = Field(description="مدخلات انتهت صلاحيتها (TTL).")
+
+
+class CacheStatsResponse(BaseModel):
+    public_answers: CacheStat = Field(description="كاش الإجابات العامة (غير الخاصة بطالب).")
+    query_embeddings: CacheStat = Field(description="كاش متجهات الأسئلة (Jina).")
+
+
 class MessageResponse(BaseModel):
     """Generic acknowledgement for delete/clear style operations."""
 

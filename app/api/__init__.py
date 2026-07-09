@@ -16,7 +16,7 @@ from fastapi import FastAPI
 
 from app import config
 from app.api import middleware
-from app.api.routers import chat, files, health, sessions
+from app.api.routers import cache, chat, files, health, sessions
 from app.chatbot import IUGChatbot
 from app.log import get_logger
 
@@ -62,5 +62,6 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
     app.include_router(chat.router, prefix="/api")
     app.include_router(files.router, prefix="/api")
     app.include_router(sessions.router, prefix="/api")
+    app.include_router(cache.router, prefix="/api")
 
     return app

@@ -20,6 +20,19 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "jina-embeddings-v3")
 EMBED_API_KEY = os.getenv("EMBED_API_KEY", "")
 EMBED_API_URL = os.getenv("EMBED_API_URL", "")
 
+# ── Caching (in-process TTL + LRU) ────────────────────────────────────────
+# Two safe caches (see app.cache / app.chatbot):
+#   • query-embedding cache: question text → its Jina vector (deterministic,
+#     no PII in the value). Saves an embeddings API call on repeated questions.
+#   • public-answer cache:  full answer for a PUBLIC turn only (no owned
+#     student record + no prior history). NEVER stores a response built from
+#     any student's private data — those are always generated in real time.
+CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
+CACHE_ANSWER_TTL = int(os.getenv("CACHE_ANSWER_TTL", "3600"))       # 1 hour
+CACHE_ANSWER_MAXSIZE = int(os.getenv("CACHE_ANSWER_MAXSIZE", "512"))
+CACHE_EMBED_TTL = int(os.getenv("CACHE_EMBED_TTL", "86400"))         # 24 hours
+CACHE_EMBED_MAXSIZE = int(os.getenv("CACHE_EMBED_MAXSIZE", "2048"))
+
 # ── Logging ───────────────────────────────────────────────────────────────
 # DEBUG | INFO | WARNING | ERROR — consumed by app.log (one console handler).
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
