@@ -20,6 +20,10 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "jina-embeddings-v3")
 EMBED_API_KEY = os.getenv("EMBED_API_KEY", "")
 EMBED_API_URL = os.getenv("EMBED_API_URL", "")
 
+# ── Logging ───────────────────────────────────────────────────────────────
+# DEBUG | INFO | WARNING | ERROR — consumed by app.log (one console handler).
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
 # ── API layer (FastAPI) ───────────────────────────────────────────────────
 # ENV switches docs/CORS defaults: "development" | "testing" | "production".
 API_ENV = os.getenv("API_ENV", "development")

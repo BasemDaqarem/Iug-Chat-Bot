@@ -18,6 +18,9 @@ from typing import List, Optional
 import numpy as np
 
 from app import config
+from app.log import get_logger
+
+log = get_logger("index_store")
 
 
 def _paths(name: str):
@@ -71,7 +74,7 @@ def save(name: str, chunks: List[str], index: np.ndarray, model: str) -> None:
                 ensure_ascii=False,
             )
     except Exception as exc:
-        print(f"⚠️  تعذّر حفظ فهرس '{name}' على القرص: {exc}")
+        log.warning("⚠️  تعذّر حفظ فهرس '%s' على القرص: %s", name, exc)
 
 
 def build_or_load(name: str, chunks: List[str], build_fn) -> np.ndarray:
@@ -80,7 +83,7 @@ def build_or_load(name: str, chunks: List[str], build_fn) -> np.ndarray:
     model = config.EMBED_MODEL
     cached = load(name, chunks, model)
     if cached is not None:
-        print(f"✅ فهرس '{name}' مُحمّل من الكاش ({len(cached)} متجه) — بلا إعادة حساب.")
+        log.info("✅ فهرس '%s' مُحمّل من الكاش (%d متجه) — بلا إعادة حساب.", name, len(cached))
         return cached
     index = build_fn(chunks)
     save(name, chunks, index, model)

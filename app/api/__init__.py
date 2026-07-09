@@ -18,6 +18,9 @@ from app import config
 from app.api import middleware
 from app.api.routers import chat, files, health, sessions
 from app.chatbot import IUGChatbot
+from app.log import get_logger
+
+log = get_logger("api")
 
 _DESCRIPTION = """
 واجهة برمجية لشات بوت الجامعة الإسلامية بغزة.
@@ -40,7 +43,7 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
             instance = IUGChatbot()
             instance.initialize()        # Mongo + cached embedding indexes
             app.state.bot = instance
-        print("🚀 IUG Chatbot API جاهزة.")
+        log.info("🚀 IUG Chatbot API جاهزة.")
         yield
 
     app = FastAPI(
