@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot
+from app.api.deps import get_bot, get_current_student, require_admin
 from app.api.errors import BadRequestError, NotFoundError, UpstreamError
 from app.api.schemas import (
     ErrorResponse,
@@ -14,7 +14,16 @@ from app.api.schemas import (
 )
 from app.chatbot import IUGChatbot
 
-router = APIRouter(prefix="/files", tags=["Uploaded Files"])
+# Reads require a valid student token; corpus MUTATIONS require the admin key —
+# so no one can anonymously wipe or poison the shared knowledge base.
+router = APIRouter(
+    prefix="/files",
+    tags=["Uploaded Files"],
+    responses={
+        401: {"model": ErrorResponse, "description": "توكن مفقود أو منتهٍ"},
+        403: {"model": ErrorResponse, "description": "صلاحية إدارية مطلوبة"},
+    },
+)
 
 
 def _file_names(bot: IUGChatbot) -> set:
@@ -26,6 +35,7 @@ def _file_names(bot: IUGChatbot) -> set:
     response_model=FilesListResponse,
     summary="قائمة الملفات المرفوعة",
     description="كل ملف مع عدد مقاطعه وهل فهرس البحث الدلالي جاهز له.",
+    dependencies=[Depends(get_current_student)],
 )
 def list_files(bot: IUGChatbot = Depends(get_bot)) -> FilesListResponse:
     files = [FileInfo(**f) for f in bot.get_uploaded_files_list()]
@@ -42,6 +52,7 @@ def list_files(bot: IUGChatbot = Depends(get_bot)) -> FilesListResponse:
         "نفس الاسم + نفس المحتوى = نفس النتيجة."
     ),
     responses={400: {"model": ErrorResponse, "description": "محتوى غير صالح"}},
+    dependencies=[Depends(require_admin)],
 )
 def upload_file(
     collection_name: str,
@@ -65,6 +76,7 @@ def upload_file(
     summary="إعادة فهرسة ملف",
     description="يعيد بناء مقاطع الملف وفهرسه من محتواه المخزّن في Mongo.",
     responses={404: {"model": ErrorResponse, "description": "الملف غير موجود"}},
+    dependencies=[Depends(require_admin)],
 )
 def reload_file(collection_name: str, bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
     if collection_name not in _file_names(bot):
@@ -81,6 +93,7 @@ def reload_file(collection_name: str, bot: IUGChatbot = Depends(get_bot)) -> Mes
     summary="حذف ملف مرفوع",
     description="يحذف الملف من Mongo ومن فهارس البحث في الذاكرة.",
     responses={404: {"model": ErrorResponse, "description": "الملف غير موجود"}},
+    dependencies=[Depends(require_admin)],
 )
 def delete_file(collection_name: str, bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
     if collection_name not in _file_names(bot):

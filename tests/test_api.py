@@ -6,11 +6,14 @@ correct wiring, correct schemas, correct error translation.
 """
 
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app import config
 from app.api import create_app
 from app.errors import UpstreamServiceError
+from app.tokens import create_access_token
 
 
 class FakeBot:
@@ -76,10 +79,20 @@ class ApiBase(unittest.TestCase):
 
     def setUp(self):
         self.bot = FakeBot()
+        self._admin = patch.object(config, "ADMIN_API_KEY", "test-admin-key")
+        self._admin.start()
+        self.addCleanup(self._admin.stop)
         app = create_app(bot=self.bot)
         self.client = TestClient(app)
         self.client.__enter__()          # run lifespan (installs app.state.bot)
         self.addCleanup(self.client.__exit__, None, None, None)
+
+    def auth(self, student_id="s1"):
+        return {"Authorization": "Bearer " + create_access_token(student_id)}
+
+    def admin(self, student_id="s1"):
+        # admin ops also need a valid session token in the real flow; include both
+        return {**self.auth(student_id), "X-Admin-Key": "test-admin-key"}
 
 
 class TestHealth(ApiBase):
@@ -100,45 +113,67 @@ class TestHealth(ApiBase):
 class TestChat(ApiBase):
 
     def test_chat_happy_path(self):
-        r = self.client.post("/api/chat", json={"question": "سؤال؟", "session_id": "s1"})
+        r = self.client.post("/api/chat", json={"question": "سؤال؟"}, headers=self.auth("s1"))
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["answer"], "إجابة")
         self.assertEqual(body["source"], "knowledge_base")
         self.assertEqual(body["top_chunks"], ["مقطع"])
 
-    def test_chat_validation_rejects_empty_question(self):
-        r = self.client.post("/api/chat", json={"question": "", "session_id": "s1"})
-        self.assertEqual(r.status_code, 422)
+    def test_chat_requires_token(self):
+        r = self.client.post("/api/chat", json={"question": "سؤال؟"})
+        self.assertEqual(r.status_code, 401)
 
-    def test_chat_validation_requires_session_id(self):
-        r = self.client.post("/api/chat", json={"question": "سؤال"})
+    def test_chat_validation_rejects_empty_question(self):
+        r = self.client.post("/api/chat", json={"question": ""}, headers=self.auth("s1"))
         self.assertEqual(r.status_code, 422)
 
     def test_chat_all_files(self):
-        r = self.client.post("/api/chat/files", json={"question": "سؤال؟", "session_id": "s1"})
+        r = self.client.post("/api/chat/files", json={"question": "سؤال؟"}, headers=self.auth("s1"))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["source"], "uploaded_files_all")
 
-    def test_chat_student(self):
-        r = self.client.post("/api/chat/student", json={"question": "ما حالتي؟", "session_id": "12345"})
+    def test_chat_student_requires_token(self):
+        # No Authorization header → 401, never processed.
+        r = self.client.post("/api/chat/student", json={"question": "ما حالتي؟"})
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["error"]["code"], "UNAUTHORIZED")
+
+    def test_chat_student_with_token(self):
+        r = self.client.post("/api/chat/student", json={"question": "ما حالتي؟"},
+                             headers=self.auth("12345"))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["source"], "student_profile")
 
+    def test_chat_student_identity_comes_from_token_not_body(self):
+        # A spoofed session_id in the body is ignored; identity = token's sub.
+        r = self.client.post("/api/chat/student",
+                             json={"question": "ما حالتي؟", "session_id": "victim999"},
+                             headers=self.auth("12345"))
+        self.assertEqual(r.status_code, 200)
+        # FakeBot echoes the session_id it was actually called with into history
+        self.assertIn("12345", self.bot.history)
+        self.assertNotIn("victim999", self.bot.history)
+
+    def test_chat_student_rejects_garbage_token(self):
+        r = self.client.post("/api/chat/student", json={"question": "س"},
+                             headers={"Authorization": "Bearer not.a.jwt"})
+        self.assertEqual(r.status_code, 401)
+
     def test_chat_one_file(self):
         r = self.client.post("/api/chat/files/ملف_علامات",
-                             json={"question": "سؤال؟", "session_id": "s1"})
+                             json={"question": "سؤال؟"}, headers=self.auth("s1"))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["source"], "uploaded_file")
 
     def test_chat_missing_file_404(self):
         r = self.client.post("/api/chat/files/غير_موجود",
-                             json={"question": "سؤال؟", "session_id": "s1"})
+                             json={"question": "سؤال؟"}, headers=self.auth("s1"))
         self.assertEqual(r.status_code, 404)
 
     def test_llm_failure_maps_to_502(self):
         self.bot.fail_next_chat = True
-        r = self.client.post("/api/chat", json={"question": "سؤال؟", "session_id": "s1"})
+        r = self.client.post("/api/chat", json={"question": "سؤال؟"}, headers=self.auth("s1"))
         self.assertEqual(r.status_code, 502)
         body = r.json()
         self.assertFalse(body["success"])
@@ -148,50 +183,76 @@ class TestChat(ApiBase):
 
 class TestFiles(ApiBase):
 
+    def test_list_files_requires_token(self):
+        self.assertEqual(self.client.get("/api/files").status_code, 401)
+
     def test_list_files(self):
-        r = self.client.get("/api/files")
+        r = self.client.get("/api/files", headers=self.auth())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["count"], 1)
         self.assertEqual(r.json()["files"][0]["collection"], "ملف_علامات")
 
+    def test_upload_requires_admin(self):
+        # a normal student token is NOT enough to mutate the shared corpus
+        r = self.client.put("/api/files/جديد", json={"documents": [{"a": 1}]},
+                            headers=self.auth("student"))
+        self.assertEqual(r.status_code, 403)
+
     def test_upload_then_visible(self):
         r = self.client.put("/api/files/جديد",
-                            json={"documents": [{"a": 1}, {"b": 2}]})
+                            json={"documents": [{"a": 1}, {"b": 2}]}, headers=self.admin())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), {"inserted": 2, "collection": "جديد", "indexed": True})
-        self.assertEqual(self.client.get("/api/files").json()["count"], 2)
+        self.assertEqual(self.client.get("/api/files", headers=self.auth()).json()["count"], 2)
+
+    def test_delete_requires_admin(self):
+        self.assertEqual(
+            self.client.delete("/api/files/ملف_علامات", headers=self.auth()).status_code, 403)
 
     def test_delete_file(self):
-        r = self.client.delete("/api/files/ملف_علامات")
+        r = self.client.delete("/api/files/ملف_علامات", headers=self.admin())
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.client.get("/api/files").json()["count"], 0)
+        self.assertEqual(self.client.get("/api/files", headers=self.auth()).json()["count"], 0)
 
     def test_delete_missing_404(self):
-        self.assertEqual(self.client.delete("/api/files/غير_موجود").status_code, 404)
+        self.assertEqual(
+            self.client.delete("/api/files/غير_موجود", headers=self.admin()).status_code, 404)
 
     def test_reload_missing_404(self):
-        self.assertEqual(self.client.post("/api/files/غير_موجود/reload").status_code, 404)
+        self.assertEqual(
+            self.client.post("/api/files/غير_موجود/reload", headers=self.admin()).status_code, 404)
 
     def test_reload_ok(self):
-        self.assertEqual(self.client.post("/api/files/ملف_علامات/reload").status_code, 200)
+        self.assertEqual(
+            self.client.post("/api/files/ملف_علامات/reload", headers=self.admin()).status_code, 200)
 
 
 class TestSessions(ApiBase):
 
+    def test_history_requires_token(self):
+        self.assertEqual(self.client.get("/api/sessions/me/history").status_code, 401)
+
     def test_empty_history(self):
-        r = self.client.get("/api/sessions/s9/history")
+        r = self.client.get("/api/sessions/me/history", headers=self.auth("s9"))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), {"session_id": "s9", "turns": [], "count": 0})
 
     def test_history_accumulates_and_clears(self):
-        self.client.post("/api/chat", json={"question": "أول", "session_id": "s1"})
-        self.client.post("/api/chat", json={"question": "ثاني", "session_id": "s1"})
-        r = self.client.get("/api/sessions/s1/history")
+        h = self.auth("s1")
+        self.client.post("/api/chat/student", json={"question": "أول"}, headers=h)
+        self.client.post("/api/chat/student", json={"question": "ثاني"}, headers=h)
+        r = self.client.get("/api/sessions/me/history", headers=h)
         self.assertEqual(r.json()["count"], 2)
         self.assertEqual(r.json()["turns"][0]["user"], "أول")
 
-        self.client.delete("/api/sessions/s1/history")
-        self.assertEqual(self.client.get("/api/sessions/s1/history").json()["count"], 0)
+        self.client.delete("/api/sessions/me/history", headers=h)
+        self.assertEqual(self.client.get("/api/sessions/me/history", headers=h).json()["count"], 0)
+
+    def test_cannot_read_another_students_history(self):
+        # student s1 builds history; student s2's token sees only their own (empty)
+        self.client.post("/api/chat/student", json={"question": "سري"}, headers=self.auth("s1"))
+        r = self.client.get("/api/sessions/me/history", headers=self.auth("s2"))
+        self.assertEqual(r.json()["count"], 0)  # s2 never sees s1's history
 
 
 class TestErrorEnvelope(ApiBase):
@@ -208,12 +269,17 @@ class TestErrorEnvelope(ApiBase):
         self.assertIn("details", err)
 
     def test_not_found_envelope(self):
-        r = self.client.delete("/api/files/مفقود")
+        r = self.client.delete("/api/files/مفقود", headers=self.admin())
         self.assertEqual(r.status_code, 404)
         self._assert_envelope(r.json(), "NOT_FOUND", "/api/files/مفقود")
 
+    def test_unauthorized_envelope(self):
+        r = self.client.post("/api/chat", json={"question": "س"})  # no token
+        self.assertEqual(r.status_code, 401)
+        self._assert_envelope(r.json(), "UNAUTHORIZED", "/api/chat")
+
     def test_validation_envelope_lists_the_field(self):
-        r = self.client.post("/api/chat", json={"question": "", "session_id": "s"})
+        r = self.client.post("/api/chat", json={"question": ""}, headers=self.auth("s"))
         self.assertEqual(r.status_code, 422)
         body = r.json()
         self._assert_envelope(body, "VALIDATION_ERROR", "/api/chat")
@@ -222,7 +288,7 @@ class TestErrorEnvelope(ApiBase):
 
     def test_upstream_envelope(self):
         self.bot.fail_next_chat = True
-        r = self.client.post("/api/chat/files", json={"question": "q", "session_id": "s"})
+        r = self.client.post("/api/chat/files", json={"question": "q"}, headers=self.auth("s"))
         self.assertEqual(r.status_code, 502)
         self._assert_envelope(r.json(), "UPSTREAM_ERROR", "/api/chat/files")
 
@@ -233,7 +299,7 @@ class TestErrorEnvelope(ApiBase):
         client = TestClient(create_app(bot=self.bot), raise_server_exceptions=False)
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
-        r = client.post("/api/chat", json={"question": "q", "session_id": "s"})
+        r = client.post("/api/chat", json={"question": "q"}, headers=self.auth("s"))
         self.assertEqual(r.status_code, 500)
         body = r.json()
         self._assert_envelope(body, "INTERNAL_ERROR", "/api/chat")
@@ -261,7 +327,8 @@ class TestDocs(ApiBase):
         r = self.client.get("/openapi.json")
         self.assertEqual(r.status_code, 200)
         paths = r.json()["paths"]
-        for expected in ("/health", "/api/chat", "/api/files", "/api/sessions/{session_id}/history"):
+        for expected in ("/health", "/api/chat", "/api/chat/student", "/api/auth/login",
+                         "/api/files", "/api/sessions/me/history"):
             self.assertIn(expected, paths)
 
 

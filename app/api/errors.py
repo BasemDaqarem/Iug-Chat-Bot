@@ -33,6 +33,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app import config
 from app.errors import ChatbotError, ConfigurationError
 from app.log import get_logger
+from app.tokens import InvalidTokenError
 
 log = get_logger("api.errors")
 
@@ -118,6 +119,12 @@ def setup_error_handlers(app: FastAPI) -> None:
             log.error("APIError %d %s at %s: %s",
                       exc.status_code, exc.code, request.url.path, exc.message)
         return _render(exc.status_code, exc.code, exc.message, exc.details, request)
+
+    @app.exception_handler(InvalidTokenError)
+    async def _invalid_token(request: Request, exc: InvalidTokenError):
+        # Belt-and-suspenders: even if an InvalidTokenError escapes the auth
+        # dependency, it renders as 401 (never a 502 via the ChatbotError path).
+        return _render(401, "UNAUTHORIZED", exc.message, None, request)
 
     @app.exception_handler(ChatbotError)
     async def _domain_error(request: Request, exc: ChatbotError):

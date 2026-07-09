@@ -26,6 +26,12 @@
 
   let mode = "login"; // 'login' | 'register'
 
+  // Show a one-time message handed over from the chat page (e.g. expired token).
+  try {
+    const flash = sessionStorage.getItem("iug_flash");
+    if (flash) { showMessage(flash, "err"); sessionStorage.removeItem("iug_flash"); }
+  } catch (_) {}
+
   // ---------- mode switching (login <-> register) ----------
   const COPY = {
     login:    { btn: "تسجيل الدخول",  pass: "current-password" },
@@ -155,6 +161,7 @@
         student_id: (data && data.student_id) || el.id.value,
         name: name,
         profile: (data && data.profile) || {},
+        token: (data && data.access_token) || "",
       }));
       stored = sessionStorage.getItem("iug_auth") !== null;
     } catch (_) {

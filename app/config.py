@@ -37,6 +37,29 @@ CACHE_EMBED_MAXSIZE = int(os.getenv("CACHE_EMBED_MAXSIZE", "2048"))
 # DEBUG | INFO | WARNING | ERROR — consumed by app.log (one console handler).
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# ── Authentication (JWT) ──────────────────────────────────────────────────
+# Signs the session token issued at login. MUST be a strong secret set via
+# .env in production — the default below is for local dev only (app.tokens
+# logs a warning if it is still in use outside development).
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-insecure-change-me")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
+
+# Admin key for corpus-mutating ops (file upload/delete/reload, cache clear).
+# Empty by default → those endpoints are DENIED until an admin key is set.
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+
+
+def assert_secure_for_production() -> None:
+    """Fail closed: refuse to run in production with a weak/default JWT secret,
+    instead of quietly signing forgeable tokens. Dev/testing keep the default."""
+    if API_ENV == "production" and (
+        JWT_SECRET == "dev-insecure-change-me" or len(JWT_SECRET) < 32
+    ):
+        raise RuntimeError(
+            "❌ JWT_SECRET ضعيف أو افتراضي في الإنتاج — عيّن سراً قوياً (≥32 حرفاً) في .env قبل التشغيل."
+        )
+
 # ── API layer (FastAPI) ───────────────────────────────────────────────────
 # ENV switches docs/CORS defaults: "development" | "testing" | "production".
 API_ENV = os.getenv("API_ENV", "development")
