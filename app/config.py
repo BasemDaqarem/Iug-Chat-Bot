@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Chat LLM (Groq-compatible endpoint) ──────────────────────────────────
+# ── Chat LLM (any OpenAI-compatible endpoint: OpenRouter / Groq / NVIDIA …) ─
 CHAT_API_MODEL = os.getenv("CHAT_API_MODEL", "openai/gpt-oss-120b")
 CHAT_API_KEY = os.getenv("CHAT_API_KEY", "")
 CHAT_API_URL = os.getenv("CHAT_API_URL", "")

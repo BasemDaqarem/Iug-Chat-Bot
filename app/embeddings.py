@@ -1,5 +1,5 @@
 """
-Jina embeddings client + semantic-index construction.
+Embeddings client (Jina-compatible endpoint) + semantic-index construction.
 
 An "index" here is a float32 matrix of L2-normalized row vectors, so
 cosine similarity against a normalized query reduces to a dot product.
@@ -13,9 +13,14 @@ import requests
 
 from app import config
 from app.cache import TTLCache
+from app.http_util import error_detail, provider_label, status_hint
 from app.log import get_logger
 
 log = get_logger("embeddings")
+
+
+def _provider() -> str:
+    return provider_label(config.EMBED_API_URL, "خدمة التضمين")
 
 # question text → its L2-normalized query vector. Deterministic for a fixed
 # embedding model, and the value is a vector (never an answer or a record), so
@@ -32,15 +37,37 @@ def reset_query_cache() -> None:
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
+    provider = _provider()
+    if not config.EMBED_API_KEY:
+        raise RuntimeError("❌ EMBED_API_KEY غير موجود في ملف .env — أضف مفتاح خدمة التضمين (embeddings).")
+    if not config.EMBED_API_URL:
+        raise RuntimeError("❌ EMBED_API_URL غير موجود في ملف .env — أضف رابط خدمة التضمين.")
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config.EMBED_API_KEY}",
     }
     data = {"model": config.EMBED_MODEL, "input": texts}
-    resp = requests.post(config.EMBED_API_URL, headers=headers, json=data, timeout=120)
-    resp.raise_for_status()
-    embeddings = [item["embedding"] for item in resp.json()["data"]]
-    return np.array(embeddings, dtype=np.float32)
+    try:
+        resp = requests.post(config.EMBED_API_URL, headers=headers, json=data, timeout=120)
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(
+            f"❌ تعذّر الاتصال بـ {provider} — تحقّق من الإنترنت ومن EMBED_API_URL في .env."
+        )
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"❌ {provider} استغرق وقتاً طويلاً في التضمين — حاول مرة أخرى.")
+
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"❌ {provider} رفض طلب التضمين (HTTP {resp.status_code}): "
+            f"{error_detail(resp)}{status_hint(resp.status_code)}"
+        )
+
+    try:
+        vectors = [item["embedding"] for item in resp.json()["data"]]
+    except (KeyError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"❌ رد غير متوقّع من {provider} (لا يحتوي متجهات صالحة): {exc}")
+    return np.array(vectors, dtype=np.float32)
 
 
 def build_index(chunks: List[str]) -> np.ndarray:
