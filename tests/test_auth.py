@@ -87,6 +87,13 @@ class TestLogin(AuthApiBase):
         self.assertEqual(body["profile"]["name"], "محمد أحمد")
         self.assertEqual(body["profile"]["gpa"], 88.5)
 
+    def test_login_issues_valid_token(self):
+        from app.tokens import decode_token
+        r = self.client.post("/api/auth/login", json={"student_id": "12345", "password": "pin1234"})
+        body = r.json()
+        self.assertEqual(body["token_type"], "bearer")
+        self.assertEqual(decode_token(body["access_token"]), "12345")  # token proves identity
+
     def test_wrong_password_is_401_envelope(self):
         r = self.client.post("/api/auth/login", json={"student_id": "12345", "password": "nope"})
         self.assertEqual(r.status_code, 401)

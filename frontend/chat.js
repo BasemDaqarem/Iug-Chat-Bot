@@ -8,9 +8,15 @@
   // ---------- auth guard ----------
   let auth;
   try { auth = JSON.parse(sessionStorage.getItem("iug_auth") || "null"); } catch (_) {}
-  if (!auth || !auth.student_id) {
+  if (!auth || !auth.token) {           // no signed session → back to login
     window.location.replace("index.html");
     return;
+  }
+
+  function endSession(message) {
+    try { sessionStorage.removeItem("iug_auth"); } catch (_) {}
+    try { sessionStorage.setItem("iug_flash", message || ""); } catch (_) {}
+    window.location.replace("index.html");
   }
 
   const el = {
@@ -77,13 +83,20 @@
     try {
       const res = await fetch("/api/chat/student", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, session_id: String(auth.student_id) }),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + auth.token,   // identity from the token
+        },
+        body: JSON.stringify({ question }),
       });
       let data = null;
       try { data = await res.json(); } catch (_) {}
       dots.remove();
 
+      if (res.status === 401) {           // token missing/expired → re-login
+        endSession("انتهت صلاحية جلستك، سجّل الدخول من جديد.");
+        return;
+      }
       if (res.ok && data) {
         bubble(data.answer || "لم أستطع إيجاد إجابة.", "bot");
       } else {

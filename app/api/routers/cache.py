@@ -9,7 +9,7 @@ auth layer lands.
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot
+from app.api.deps import get_bot, get_current_student, require_admin
 from app.api.schemas import CacheStatsResponse, MessageResponse
 from app.chatbot import IUGChatbot
 
@@ -24,6 +24,7 @@ router = APIRouter(prefix="/cache", tags=["Cache"])
         "معدّل الإصابة (hit rate)، الحجم، الإزالات، وانتهاء الصلاحية لكل كاش. "
         "أرقام تجميعية فقط — لا تكشف أي محتوى مخزّن."
     ),
+    dependencies=[Depends(get_current_student)],
 )
 def cache_stats(bot: IUGChatbot = Depends(get_bot)) -> CacheStatsResponse:
     return CacheStatsResponse(**bot.cache_stats())
@@ -34,6 +35,7 @@ def cache_stats(bot: IUGChatbot = Depends(get_bot)) -> CacheStatsResponse:
     response_model=MessageResponse,
     summary="مسح الكاش يدوياً",
     description="يُفرغ كاش الإجابات ومتجهات الأسئلة (إبطال يدوي فوري).",
+    dependencies=[Depends(require_admin)],
 )
 def cache_clear(bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
     bot.clear_caches()

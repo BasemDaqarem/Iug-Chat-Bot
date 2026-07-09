@@ -1,5 +1,10 @@
 """
-Chat endpoints — thin delegates to IUGChatbot's three chat flows.
+Chat endpoints — thin delegates to IUGChatbot's chat flows.
+
+EVERY chat endpoint requires a valid session token and derives the identity
+(and therefore the conversation-history key) FROM the token — never from a
+client-supplied session_id. This closes the IDOR/history-leak surface: a
+caller can only ever act as, and read the history of, themselves.
 
 All endpoints are plain `def` (not `async def`) ON PURPOSE: the underlying
 pipeline is blocking I/O (requests → embeddings API + LLM, pymongo), and
@@ -9,9 +14,9 @@ the event loop or other requests.
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot
+from app.api.deps import get_bot, get_current_student
 from app.api.errors import NotFoundError
-from app.api.schemas import ChatRequest, ChatResponse, ErrorResponse
+from app.api.schemas import ChatResponse, ErrorResponse, StudentChatRequest
 from app.chatbot import IUGChatbot
 
 # Upstream failures (LLM / embeddings) raise UpstreamServiceError inside the
@@ -21,36 +26,10 @@ router = APIRouter(
     prefix="/chat",
     tags=["Chat"],
     responses={
+        401: {"model": ErrorResponse, "description": "توكن مفقود أو منتهٍ"},
         502: {"model": ErrorResponse, "description": "خطأ من خدمة خارجية (LLM/Embeddings)"},
     },
 )
-
-
-@router.post(
-    "",
-    response_model=ChatResponse,
-    summary="محادثة على قاعدة المعرفة الرئيسية",
-    description=(
-        "التدفق الكامل: استرجاع هجين مُرشَّح بالصلاحية من قاعدة المعرفة، "
-        "ثم حارس الخصوصية، ثم إجابة الـ LLM. سجل المحادثة يُدار تلقائياً "
-        "حسب session_id."
-    ),
-)
-def chat(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
-    return ChatResponse(**bot.chat(body.question, body.session_id))
-
-
-@router.post(
-    "/files",
-    response_model=ChatResponse,
-    summary="محادثة على كل الملفات المرفوعة",
-    description=(
-        "بحث هجين عبر جميع الملفات المرفوعة مدموجاً في ترتيب واحد — "
-        "الـ LLM يرى أفضل top-K مقاطع فقط أياً كان مصدرها."
-    ),
-)
-def chat_all_files(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
-    return ChatResponse(**bot.chat_with_all_files(body.question, body.session_id))
 
 
 @router.post(
@@ -58,13 +37,44 @@ def chat_all_files(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> Cha
     response_model=ChatResponse,
     summary="محادثة الطالب (تدمج ملفه الأكاديمي)",
     description=(
-        "الواجهة بعد الدخول تستخدم هذه النقطة: أسئلة الطالب عن حالته/معدله/ترتيبه "
-        "تُجاب من ملفه الشخصي (بحثاً عن هويته في students_auth، فلا يرى إلا بياناته)؛ "
-        "وأي سؤال آخر يُجاب من محتوى الجامعة."
+        "النقطة التي تستخدمها الواجهة. أسئلة «حالتي/معدلي/ترتيبي» تُجاب من ملف "
+        "الطالب الموثّق، وأي سؤال آخر من محتوى الجامعة. الهوية من التوكن."
     ),
 )
-def chat_student(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatResponse:
-    return ChatResponse(**bot.chat_as_student(body.question, body.session_id))
+def chat_student(
+    body: StudentChatRequest,
+    student_id: str = Depends(get_current_student),
+    bot: IUGChatbot = Depends(get_bot),
+) -> ChatResponse:
+    return ChatResponse(**bot.chat_as_student(body.question, student_id))
+
+
+@router.post(
+    "",
+    response_model=ChatResponse,
+    summary="محادثة على قاعدة المعرفة الرئيسية",
+    description="استرجاع هجين مُرشَّح بالصلاحية من قاعدة المعرفة ثم إجابة الـ LLM.",
+)
+def chat(
+    body: StudentChatRequest,
+    student_id: str = Depends(get_current_student),
+    bot: IUGChatbot = Depends(get_bot),
+) -> ChatResponse:
+    return ChatResponse(**bot.chat(body.question, student_id))
+
+
+@router.post(
+    "/files",
+    response_model=ChatResponse,
+    summary="محادثة على كل الملفات المرفوعة",
+    description="بحث هجين عبر جميع الملفات المرفوعة مدموجاً في ترتيب واحد.",
+)
+def chat_all_files(
+    body: StudentChatRequest,
+    student_id: str = Depends(get_current_student),
+    bot: IUGChatbot = Depends(get_bot),
+) -> ChatResponse:
+    return ChatResponse(**bot.chat_with_all_files(body.question, student_id))
 
 
 @router.post(
@@ -76,10 +86,11 @@ def chat_student(body: ChatRequest, bot: IUGChatbot = Depends(get_bot)) -> ChatR
 )
 def chat_one_file(
     collection_name: str,
-    body: ChatRequest,
+    body: StudentChatRequest,
+    student_id: str = Depends(get_current_student),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
     files = {f["collection"] for f in bot.get_uploaded_files_list()}
     if collection_name not in files:
         raise NotFoundError(f"الملف '{collection_name}' غير موجود. ارفعه أولاً.")
-    return ChatResponse(**bot.chat_with_file(body.question, collection_name, body.session_id))
+    return ChatResponse(**bot.chat_with_file(body.question, collection_name, student_id))

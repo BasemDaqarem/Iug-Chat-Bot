@@ -54,6 +54,8 @@ _DESCRIPTION = """
 
 
 def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
+    config.assert_secure_for_production()  # refuse to boot prod with a weak JWT secret
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if bot is not None:
