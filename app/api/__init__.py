@@ -9,15 +9,19 @@ IUGChatbot instance created at startup (lifespan) and shared via app.state.
     create_app(bot=fake)  → tests inject a stub, no Mongo/APIs needed
 """
 
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app import config
 from app.api import middleware
 from app.api.errors import setup_error_handlers
-from app.api.routers import cache, chat, files, health, sessions
+from app.api.routers import auth, cache, chat, files, health, sessions
+
+_FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
 from app.chatbot import IUGChatbot
 from app.log import get_logger
 
@@ -61,9 +65,15 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
     setup_error_handlers(app)
 
     app.include_router(health.router)
+    app.include_router(auth.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     app.include_router(files.router, prefix="/api")
     app.include_router(sessions.router, prefix="/api")
     app.include_router(cache.router, prefix="/api")
+
+    # Premium auth UI (static, offline) — served at /app/ (mounted last so it
+    # never shadows the /api and /health routes above).
+    if os.path.isdir(_FRONTEND_DIR):
+        app.mount("/app", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
 
     return app
