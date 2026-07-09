@@ -233,6 +233,20 @@ class TestErrorEnvelope(ApiBase):
         self.assertNotIn("KeyError", body["error"]["message"])  # message is friendly
 
 
+class TestStaticFrontend(ApiBase):
+
+    def test_frontend_served_with_no_store(self):
+        # Guards the root cause of "login works but doesn't redirect": the
+        # frontend must never be cached, so a JS update is always picked up.
+        r = self.client.get("/app/index.html")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("no-store", r.headers.get("cache-control", ""))
+
+    def test_frontend_assets_are_version_busted(self):
+        html = self.client.get("/app/index.html").text
+        self.assertIn("app.js?v=", html)  # cache-busting query present
+
+
 class TestDocs(ApiBase):
 
     def test_openapi_schema_exposed(self):
