@@ -11,6 +11,7 @@ from unittest.mock import patch
 from app import chunking, config, embeddings
 from app.cache import TTLCache
 from app.chatbot import IUGChatbot
+from app.sessions import SessionStore
 from tests.test_equivalence import FIXTURE_DATA, UPLOADED_DOCS, fake_embed
 
 
@@ -68,7 +69,7 @@ class CacheBotBase(unittest.TestCase):
     def setUp(self):
         embeddings.reset_query_cache()
         self.llm_calls = 0
-        self.bot = IUGChatbot()
+        self.bot = IUGChatbot(sessions=SessionStore())
 
         data = copy.deepcopy(FIXTURE_DATA)
         self.bot._kb._data = data

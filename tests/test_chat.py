@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from app import chunking, config, embeddings
 from app.chatbot import IUGChatbot
+from app.sessions import SessionStore
 from tests.test_equivalence import FIXTURE_DATA, UPLOADED_DOCS, fake_embed
 
 
@@ -19,7 +20,7 @@ class ChatBase(unittest.TestCase):
     def setUp(self):
         embeddings.reset_query_cache()  # isolate the module-level query cache
         self.llm_calls = []
-        self.bot = IUGChatbot()
+        self.bot = IUGChatbot(sessions=SessionStore())  # in-memory, no Mongo
 
         data = copy.deepcopy(FIXTURE_DATA)
         self.bot._kb._data = data
@@ -101,6 +102,15 @@ class TestStudentChat(ChatBase):
         with patch("app.auth.find_account", return_value=None):
             res = self._chat("chat_as_student", "كم رسوم كلية الطب؟", "12345")
         self.assertEqual(res["source"], "uploaded_files_all")
+
+    def test_asking_about_another_student_is_refused(self):
+        # third-person ranking question → blocked, never reaches profile or LLM
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}):
+            res = self._chat("chat_as_student", "ما معدل الطالب أحمد؟", "12345")
+        self.assertEqual(res["source"], "privacy_block")
+        self.assertEqual(self.llm_calls, [])
+        self.assertIn("خاصة", res["answer"])
 
     def test_unknown_student_cannot_get_a_profile(self):
         # No account for this id → nothing to expose → falls through to content.

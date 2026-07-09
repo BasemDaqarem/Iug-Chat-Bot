@@ -40,6 +40,20 @@ class TestQuestionClassifiers(unittest.TestCase):
         self.assertIn("خطر", out)
         self.assertIn("مرشدك", out)  # advice line for at-risk students
 
+    def test_asks_about_other_student_third_person(self):
+        for q in ("ما معدله؟", "كم ترتيبها على الدفعة؟", "ما معدل الطالب أحمد؟", "ترتيب زميلي"):
+            self.assertTrue(privacy.asks_about_other_student(q), q)
+
+    def test_asks_about_other_student_by_foreign_id(self):
+        # a ranking question naming a DIFFERENT student id → about someone else
+        self.assertTrue(privacy.asks_about_other_student("كم معدل الطالب 987654؟", own_student_id="12345"))
+        # the caller's OWN id is fine
+        self.assertFalse(privacy.asks_about_other_student("ما معدلي 12345؟", own_student_id="12345"))
+
+    def test_own_and_public_questions_not_flagged_as_other(self):
+        for q in ("ما هي حالتي الأكاديمية؟", "كم معدلي؟", "ما معدل القبول في الهندسة؟", "كم رسوم الطب؟"):
+            self.assertFalse(privacy.asks_about_other_student(q, own_student_id="12345"), q)
+
     def test_ranking_detection(self):
         self.assertTrue(privacy.is_ranking_question("كم معدلي التراكمي؟"))
         self.assertTrue(privacy.is_ranking_question("what is my gpa"))

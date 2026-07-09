@@ -16,7 +16,7 @@ from app.chunking import SENSITIVE_MARKER
 from app.knowledge_base import KnowledgeBase
 from app.llm import chat_completion
 from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
-from app.sessions import SessionStore
+from app.sessions import SessionStore, make_session_store
 from app.uploaded_files import UploadedFilesStore
 
 
@@ -24,10 +24,11 @@ class IUGChatbot:
 
     SENSITIVE_MARKER = SENSITIVE_MARKER
 
-    def __init__(self):
+    def __init__(self, sessions=None):
         self._kb = KnowledgeBase()
         self._uploaded = UploadedFilesStore()
-        self._sessions = SessionStore()
+        # persistent (Mongo) by default; tests inject an in-memory store
+        self._sessions = sessions if sessions is not None else make_session_store()
         # Shared across users ON PURPOSE — only ever holds PUBLIC answers
         # (see the public-turn gate in chat/chat_with_*). No student-specific
         # response is ever written here, so cross-user isolation is guaranteed.
@@ -310,6 +311,11 @@ class IUGChatbot:
         (see app.api.deps.get_current_student), never a raw client field — so
         a student can only ever read their OWN profile.
         """
+        # Asking about ANOTHER student's private record → refuse outright.
+        if privacy.asks_about_other_student(question, student_id):
+            self.push_history(student_id, question, privacy.BLOCKED_ANSWER)
+            return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": [], "source": "privacy_block"}
+
         if privacy.wants_own_academic_record(question):
             account = auth.find_account(student_id)
             profile = (account or {}).get("profile") or {}

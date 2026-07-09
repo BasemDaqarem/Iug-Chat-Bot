@@ -6,6 +6,7 @@ declare `privacy.allowed_users` (see app.chunking), so there is no
 hardcoded "students_rankings"-style coupling.
 """
 
+import re
 from typing import List, Optional
 
 from app.chunking import flatten_json_to_text
@@ -52,6 +53,30 @@ def wants_own_academic_record(question: str) -> bool:
     return is_academic_status_question(question) or any(
         k in question for k in OWN_RECORD_KEYWORDS
     )
+
+
+# Third-person / by-name / by-other-id signals that the question targets a
+# DIFFERENT student's private record — those must be refused, never answered.
+OTHER_RECORD_KEYWORDS = [
+    "معدله", "معدلها", "ترتيبه", "ترتيبها",
+    "معدل الطالب", "ترتيب الطالب", "حالة الطالب",
+    "معدل زميل", "ترتيب زميل", "معدل صديق", "ترتيب صديق",
+    "معدل الطالبة", "ترتيب الطالبة",
+]
+_STUDENT_ID_RE = re.compile(r"\d{5,}")   # a 5+ digit run looks like a student id
+
+
+def asks_about_other_student(question: str, own_student_id: Optional[str] = None) -> bool:
+    """True when the question targets ANOTHER student's private record: a
+    third-person/by-name phrasing, or a ranking/status question that names a
+    student id different from the caller's own."""
+    if any(k in question for k in OTHER_RECORD_KEYWORDS):
+        return True
+    if is_ranking_question(question) or is_academic_status_question(question):
+        for num in _STUDENT_ID_RE.findall(question):
+            if own_student_id is None or num != str(own_student_id):
+                return True
+    return False
 
 
 def build_status_from_profile(profile: dict) -> str:
