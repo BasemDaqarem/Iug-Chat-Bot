@@ -10,6 +10,7 @@ import time
 import requests
 
 from app import config
+from app.errors import ChatbotError, ConfigurationError, UpstreamServiceError
 from app.http_util import error_detail, provider_label, status_hint
 from app.log import get_logger
 
@@ -24,9 +25,9 @@ def chat_completion(system: str, user_message: str) -> str:
     """One RAG-style completion: Arabic system prompt (context already
     inlined) + the user's message (history already folded in)."""
     if not config.CHAT_API_KEY:
-        raise RuntimeError("❌ CHAT_API_KEY غير موجود في ملف .env — أضف مفتاح مزوّد المحادثة.")
+        raise ConfigurationError("❌ CHAT_API_KEY غير موجود في ملف .env — أضف مفتاح مزوّد المحادثة.")
     if not config.CHAT_API_URL:
-        raise RuntimeError("❌ CHAT_API_URL غير موجود في ملف .env — أضف رابط مزوّد المحادثة.")
+        raise ConfigurationError("❌ CHAT_API_URL غير موجود في ملف .env — أضف رابط مزوّد المحادثة.")
 
     headers = {
         "Authorization": f"Bearer {config.CHAT_API_KEY}",
@@ -62,9 +63,10 @@ def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
             if resp.status_code >= 400:
                 # Surface the provider's OWN reason + an actionable hint,
                 # instead of a bare status code.
-                raise RuntimeError(
+                raise UpstreamServiceError(
                     f"❌ {provider} رفض الطلب (HTTP {resp.status_code}): "
-                    f"{error_detail(resp)}{status_hint(resp.status_code)}"
+                    f"{error_detail(resp)}{status_hint(resp.status_code)}",
+                    details={"provider": provider, "status": resp.status_code},
                 )
 
             choice = resp.json()["choices"][0]
@@ -79,13 +81,13 @@ def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
             if choice.get("finish_reason") == "length" and attempt < max_retries:
                 payload = {**payload, "max_tokens": payload.get("max_tokens", 450) * 2}
                 continue
-            raise RuntimeError(
+            raise UpstreamServiceError(
                 f"❌ {provider} لم يُرجع نصاً للإجابة (استُهلكت ميزانية التوليد على التفكير) "
                 "— جرّب صياغة أبسط أو أقصر للسؤال."
             )
 
         except requests.exceptions.ConnectionError:
-            raise RuntimeError(
+            raise UpstreamServiceError(
                 f"❌ تعذّر الاتصال بـ {provider} — تحقّق من الاتصال بالإنترنت ومن CHAT_API_URL في .env."
             )
         except requests.exceptions.Timeout:
@@ -95,13 +97,13 @@ def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
                             provider, attempt, max_retries, wait)
                 time.sleep(wait)
                 continue
-            raise RuntimeError(f"❌ {provider} استغرق وقتاً طويلاً ولم يستجب — حاول مرة أخرى.")
-        except RuntimeError:
-            raise  # our own already-clean errors — don't re-wrap
+            raise UpstreamServiceError(f"❌ {provider} استغرق وقتاً طويلاً ولم يستجب — حاول مرة أخرى.")
+        except ChatbotError:
+            raise  # our own already-clean domain errors — don't re-wrap
         except Exception as exc:
-            raise RuntimeError(f"❌ خطأ غير متوقّع أثناء مخاطبة {provider}: {exc}")
+            raise UpstreamServiceError(f"❌ خطأ غير متوقّع أثناء مخاطبة {provider}: {exc}")
 
-    raise RuntimeError(
+    raise UpstreamServiceError(
         f"❌ {provider}: تجاوزنا حدّ الطلبات المسموح (429) بعد {max_retries} محاولات. "
         "انتظر لحظات أو تحقّق من خطة/رصيد مزوّد المحادثة."
     )
