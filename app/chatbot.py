@@ -306,9 +306,9 @@ class IUGChatbot:
         and the profile never rides the shared answer cache. Any other question
         goes to the normal university-content search.
 
-        SECURITY: student_id is the caller-supplied session id. Until session
-        tokens (JWT) land, this trusts that id — the same gap that already
-        exists for the chat endpoints. It must be signed before real launch.
+        SECURITY: callers pass the student_id extracted from the verified JWT
+        (see app.api.deps.get_current_student), never a raw client field — so
+        a student can only ever read their OWN profile.
         """
         if privacy.wants_own_academic_record(question):
             account = auth.find_account(student_id)

@@ -46,6 +46,15 @@ class AuthResponse(BaseModel):
     success: bool = True
     student_id: str
     profile: StudentProfile
+    access_token: str = Field(description="توكن الجلسة (JWT) — يُرسل في ترويسة Authorization.")
+    token_type: str = "bearer"
+
+
+class StudentChatRequest(BaseModel):
+    """Chat as the authenticated student — identity comes from the JWT, NOT the
+    body, so there is no session_id to spoof."""
+
+    question: str = Field(..., min_length=1, max_length=2000, examples=["ما هي حالتي الأكاديمية؟"])
 
 
 # ═════════════════════════════════════════════════════════════════════════

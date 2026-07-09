@@ -1,34 +1,44 @@
-"""Conversation-history endpoints (read + clear) per session."""
+"""Conversation-history endpoints — the authenticated student's OWN history."""
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot
-from app.api.schemas import HistoryResponse, HistoryTurn, MessageResponse
+from app.api.deps import get_bot, get_current_student
+from app.api.schemas import ErrorResponse, HistoryResponse, HistoryTurn, MessageResponse
 from app.chatbot import IUGChatbot
 
-router = APIRouter(prefix="/sessions", tags=["Sessions"])
+router = APIRouter(
+    prefix="/sessions",
+    tags=["Sessions"],
+    responses={401: {"model": ErrorResponse, "description": "توكن مفقود أو منتهٍ"}},
+)
 
 
 @router.get(
-    "/{session_id}/history",
+    "/me/history",
     response_model=HistoryResponse,
-    summary="سجل محادثة جلسة",
+    summary="سجل محادثتي",
     description=(
-        "آخر أدوار المحادثة المحفوظة لهذه الجلسة (بحد أقصى MAX_HISTORY). "
-        "جلسة بلا سجل ترجع قائمة فارغة — ليست خطأ."
+        "آخر أدوار محادثة الطالب الموثّق (بحد أقصى MAX_HISTORY). الهوية من التوكن، "
+        "فلا يمكن لأحد قراءة سجل غيره. سجل فارغ يرجع قائمة فارغة — ليس خطأ."
     ),
 )
-def get_history(session_id: str, bot: IUGChatbot = Depends(get_bot)) -> HistoryResponse:
-    turns = [HistoryTurn(**t) for t in bot.get_history(session_id)]
-    return HistoryResponse(session_id=session_id, turns=turns, count=len(turns))
+def get_history(
+    student_id: str = Depends(get_current_student),
+    bot: IUGChatbot = Depends(get_bot),
+) -> HistoryResponse:
+    turns = [HistoryTurn(**t) for t in bot.get_history(student_id)]
+    return HistoryResponse(session_id=student_id, turns=turns, count=len(turns))
 
 
 @router.delete(
-    "/{session_id}/history",
+    "/me/history",
     response_model=MessageResponse,
-    summary="مسح سجل محادثة جلسة",
-    description="يمسح سجل الجلسة من الذاكرة (زر 'محادثة جديدة' في الواجهة).",
+    summary="مسح سجل محادثتي",
+    description="يمسح سجل محادثة الطالب الموثّق (زر 'محادثة جديدة').",
 )
-def clear_history(session_id: str, bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
-    bot.clear_history(session_id)
-    return MessageResponse(message=f"تم مسح سجل الجلسة '{session_id}'.")
+def clear_history(
+    student_id: str = Depends(get_current_student),
+    bot: IUGChatbot = Depends(get_bot),
+) -> MessageResponse:
+    bot.clear_history(student_id)
+    return MessageResponse(message="تم مسح سجل محادثتك.")

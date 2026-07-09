@@ -7,7 +7,7 @@ Thin delegates to app.auth; all failures use the unified error envelope
 
 from fastapi import APIRouter
 
-from app import auth
+from app import auth, tokens
 from app.api.errors import ConflictError, UnauthorizedError
 from app.api.schemas import AuthResponse, ErrorResponse, LoginRequest, RegisterRequest
 
@@ -15,9 +15,11 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def _to_response(account: dict) -> AuthResponse:
+    student_id = str(account.get("student_id"))
     return AuthResponse(
-        student_id=str(account.get("student_id")),
+        student_id=student_id,
         profile=account.get("profile") or {},
+        access_token=tokens.create_access_token(student_id),
     )
 
 
