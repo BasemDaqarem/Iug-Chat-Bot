@@ -18,6 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from app import config
+from app.log import get_logger
+
+log = get_logger("api")
 
 
 async def timing_middleware(request: Request, call_next):
@@ -25,7 +28,8 @@ async def timing_middleware(request: Request, call_next):
     response = await call_next(request)
     elapsed = time.perf_counter() - start
     response.headers["X-Process-Time"] = f"{elapsed:.3f}"
-    print(f"🌐 {request.method} {request.url.path} → {response.status_code} ({elapsed:.2f}s)")
+    log.info("🌐 %s %s → %d (%.2fs)",
+             request.method, request.url.path, response.status_code, elapsed)
     return response
 
 

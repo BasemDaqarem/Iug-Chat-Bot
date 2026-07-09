@@ -17,6 +17,9 @@ from pymongo.database import Database
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 from app.config import MONGO_DB_NAME, MONGO_URI, UPLOADED_DB_NAME
+from app.log import get_logger
+
+log = get_logger("db")
 
 # Module-level singleton client, opened lazily on first use.
 _client: Optional[MongoClient] = None
@@ -86,7 +89,7 @@ def ping() -> bool:
         _get_client().admin.command("ping")
         return True
     except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
-        print(f"❌ Error: [db] ping failed: {exc}")
+        log.error("❌ [db] ping failed: %s", exc)
         return False
 
 
@@ -97,7 +100,7 @@ def close() -> None:
     if _client is not None:
         _client.close()
         _client = None
-        print("🔌 [db] MongoDB connection closed.")
+        log.info("🔌 [db] MongoDB connection closed.")
 
 
 # ═════════════════════════════════════════════════════════════════════════

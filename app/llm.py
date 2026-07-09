@@ -9,6 +9,9 @@ import time
 import requests
 
 from app import config
+from app.log import get_logger
+
+log = get_logger("llm")
 
 
 def chat_completion(system: str, user_message: str) -> str:
@@ -42,7 +45,7 @@ def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
             if resp.status_code == 429:
                 retry_after = resp.headers.get("Retry-After")
                 wait = float(retry_after) if retry_after else (2 ** attempt)
-                print(f"⚠️  Groq 429 — المحاولة {attempt}/{max_retries}، انتظار {wait:.1f}s …")
+                log.warning("⚠️  Groq 429 — المحاولة %d/%d، انتظار %.1fs …", attempt, max_retries, wait)
                 time.sleep(wait)
                 continue
 
@@ -68,7 +71,7 @@ def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
         except requests.exceptions.Timeout:
             if attempt < max_retries:
                 wait = 2 ** attempt
-                print(f"⏱️  Groq Timeout — المحاولة {attempt}/{max_retries}، انتظار {wait}s …")
+                log.warning("⏱️  Groq Timeout — المحاولة %d/%d، انتظار %ds …", attempt, max_retries, wait)
                 time.sleep(wait)
                 continue
             raise RuntimeError("❌ Groq API استغرق وقتاً طويلاً — حاول مرة أخرى.")

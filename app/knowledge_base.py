@@ -12,7 +12,10 @@ from app import config, db, index_store
 from app.chunking import build_chunks
 from app.embeddings import build_index, embed_query
 from app.lexical import BM25
+from app.log import get_logger
 from app.retrieval import hybrid_rank, rank_chunks
+
+log = get_logger("knowledge_base")
 
 
 class KnowledgeBase:
@@ -48,18 +51,18 @@ class KnowledgeBase:
 
     def load(self):
         """Load data, build chunks, build semantic index."""
-        print("⏳ Discovering & loading MongoDB collections …")
+        log.info("⏳ Discovering & loading MongoDB collections …")
         self._data = self._load_documents()
         self._chunks, self._chunk_meta = build_chunks(self._data)
-        print(f"✅ Built {len(self._chunks)} chunks from {len(self._data)} collection(s).")
+        log.info("✅ Built %d chunks from %d collection(s).", len(self._chunks), len(self._data))
 
-        print(f"⏳ Using Jina Embeddings API — model: '{config.EMBED_MODEL}' …")
+        log.info("⏳ Using Jina Embeddings API — model: '%s' …", config.EMBED_MODEL)
         if not config.EMBED_API_KEY:
             raise RuntimeError("❌ EMBED_API_KEY غير موجود — أضفه في ملف .env")
 
-        print("⏳ Building semantic index …")
+        log.info("⏳ Building semantic index …")
         self._index = index_store.build_or_load("knowledge_base", self._chunks, build_index)
-        print(f"✅ Semantic index ready — shape: {self._index.shape}")
+        log.info("✅ Semantic index ready — shape: %s", self._index.shape)
 
     @staticmethod
     def _load_documents() -> dict:
@@ -88,7 +91,8 @@ class KnowledgeBase:
             ) from exc
 
         total_docs = sum(len(v) for v in data.values())
-        print(f"✅ Data loaded from MongoDB — {len(data)} collection(s), {total_docs} document(s) total.")
+        log.info("✅ Data loaded from MongoDB — %d collection(s), %d document(s) total.",
+                 len(data), total_docs)
         return data
 
     # ── search ────────────────────────────────────────────────────────────
