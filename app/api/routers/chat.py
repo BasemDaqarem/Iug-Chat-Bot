@@ -23,8 +23,9 @@ router = APIRouter(
 
 
 def _run(chat_callable, *args) -> ChatResponse:
-    """Shared execution: translate pipeline failures (Groq/Jina/network,
-    raised as RuntimeError by app.llm / app.embeddings) into a clean 502."""
+    """Shared execution: translate pipeline failures (LLM / embeddings /
+    network, raised as RuntimeError by app.llm / app.embeddings) into a
+    clean 502 that carries the underlying provider's own reason."""
     try:
         result = chat_callable(*args)
     except RuntimeError as exc:

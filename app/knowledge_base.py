@@ -56,9 +56,9 @@ class KnowledgeBase:
         self._chunks, self._chunk_meta = build_chunks(self._data)
         log.info("✅ Built %d chunks from %d collection(s).", len(self._chunks), len(self._data))
 
-        log.info("⏳ Using Jina Embeddings API — model: '%s' …", config.EMBED_MODEL)
+        log.info("⏳ Using embeddings API — model: '%s' …", config.EMBED_MODEL)
         if not config.EMBED_API_KEY:
-            raise RuntimeError("❌ EMBED_API_KEY غير موجود — أضفه في ملف .env")
+            raise RuntimeError("❌ EMBED_API_KEY غير موجود في ملف .env — أضف مفتاح خدمة التضمين.")
 
         log.info("⏳ Building semantic index …")
         self._index = index_store.build_or_load("knowledge_base", self._chunks, build_index)

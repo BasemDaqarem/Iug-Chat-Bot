@@ -9,17 +9,21 @@ from app import config, llm
 class FakeResponse:
 
     def __init__(self, status_code=200, content="جواب تجريبي", headers=None,
-                 finish_reason="stop"):
+                 finish_reason="stop", body=None):
         self.status_code = status_code
         self._content = content
         self.headers = headers or {}
         self._finish_reason = finish_reason
+        self._body = body  # explicit JSON body (e.g. a provider error payload)
+        self.text = ""
 
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.exceptions.HTTPError(f"{self.status_code}")
 
     def json(self):
+        if self._body is not None:
+            return self._body
         return {"choices": [{
             "message": {"content": self._content},
             "finish_reason": self._finish_reason,
@@ -123,12 +127,20 @@ class TestChatCompletion(unittest.TestCase):
         self.assertIn("لم يُرجع", str(ctx.exception))
         self.assertNotIn("خطأ في Groq", str(ctx.exception))
 
-    def test_http_error_wrapped(self):
+    def test_http_error_reports_status_and_reason(self):
+        # A provider error must surface the HTTP status (and, when present, the
+        # provider's own error message) — not a hardcoded vendor name.
+        body = {"error": {"message": "model not found"}}
         with patch.object(config, "CHAT_API_KEY", "k"), \
-             patch.object(llm.requests, "post", return_value=FakeResponse(500)):
+             patch.object(config, "CHAT_API_URL", "https://openrouter.ai/api/v1/chat/completions"), \
+             patch.object(llm.requests, "post", return_value=FakeResponse(404, body=body)):
             with self.assertRaises(RuntimeError) as ctx:
                 llm.chat_completion("s", "u")
-        self.assertIn("خطأ في Groq", str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn("HTTP 404", msg)
+        self.assertIn("model not found", msg)     # provider's own reason
+        self.assertIn("openrouter.ai", msg)       # real provider, not "Groq"
+        self.assertNotIn("Groq", msg)
 
 
 if __name__ == "__main__":
