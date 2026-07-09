@@ -13,7 +13,8 @@ Feature map (each module owns exactly one responsibility):
     cache           → in-process TTL + LRU cache (query vectors, public answers)
     index_store     → on-disk persistence/cache for embedding indexes
     retrieval       → dense ranking + hybrid (dense + BM25 via RRF) ranking
-    llm             → Groq chat-completion client (payload, retries, errors)
+    http_util       → shared HTTP error → useful Arabic message helpers
+    llm             → chat-completion client, any OpenAI-compatible endpoint
     sessions        → per-session chat history store
     privacy         → sensitive-record lookups + privacy guard
     knowledge_base  → main RAG corpus lifecycle (load → chunk → index → search)

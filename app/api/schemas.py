@@ -130,7 +130,7 @@ class CacheStat(BaseModel):
 
 class CacheStatsResponse(BaseModel):
     public_answers: CacheStat = Field(description="كاش الإجابات العامة (غير الخاصة بطالب).")
-    query_embeddings: CacheStat = Field(description="كاش متجهات الأسئلة (Jina).")
+    query_embeddings: CacheStat = Field(description="كاش متجهات الأسئلة (embeddings).")
 
 
 class MessageResponse(BaseModel):

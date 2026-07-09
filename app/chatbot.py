@@ -143,7 +143,7 @@ class IUGChatbot:
         1. Semantic retrieval over the fully-dynamic chunk index
         2. Academic status shortcut (any sensitive Mongo record owned by the student)
         3. Privacy guard for ranking-style queries
-        4. LLM call (Groq)
+        4. LLM call
         """
         chunk_meta = self._kb.chunk_meta
         current_record = privacy.find_sensitive_record(chunk_meta, session_id)
