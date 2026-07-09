@@ -11,6 +11,44 @@ from typing import Any, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 # ═════════════════════════════════════════════════════════════════════════
+#  Authentication
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class LoginRequest(BaseModel):
+    student_id: str = Field(
+        ...,
+        pattern=r"^\d{3,20}$",
+        description="الرقم الجامعي (أرقام فقط).",
+        examples=["12345"],
+    )
+    password: str = Field(
+        ..., min_length=4, max_length=128, description="كلمة المرور."
+    )
+
+
+class RegisterRequest(LoginRequest):
+    name: str = Field(..., min_length=2, max_length=80, description="اسم الطالب.")
+
+
+class StudentProfile(BaseModel):
+    # Returned ONLY to the authenticated owner — this is the student's own data.
+    model_config = ConfigDict(extra="ignore")
+
+    name: Optional[str] = None
+    major: Optional[str] = None
+    gpa: Optional[float] = None
+    rank: Optional[int] = None
+    academic_status: Optional[str] = None
+
+
+class AuthResponse(BaseModel):
+    success: bool = True
+    student_id: str
+    profile: StudentProfile
+
+
+# ═════════════════════════════════════════════════════════════════════════
 #  Chat
 # ═════════════════════════════════════════════════════════════════════════
 
