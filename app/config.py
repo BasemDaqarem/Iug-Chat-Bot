@@ -92,11 +92,19 @@ BM25_B = 0.75       # document-length normalization
 
 # ── Embedding-index persistence ───────────────────────────────────────────
 # Embeddings are expensive (Jina API call per chunk) and deterministic for a
-# given (model, chunk-text). Caching them to disk turns an ~80s cold start
-# into a near-instant load and stops re-billing Jina on every run. The cache
-# is keyed by a fingerprint of (model + chunk texts), so it self-invalidates
-# the moment any chunk changes.
+# given (model, chunk-text). Persisting them turns an ~80s cold start into a
+# near-instant load and stops re-billing Jina on every run. Keyed by a
+# fingerprint of (model + chunk texts), so it self-invalidates on any change.
+#   INDEX_BACKEND = "disk"  → .index_cache/ files (great locally)
+#                 = "mongo" → embedding_index collection (survives ephemeral
+#                             disks, e.g. Render redeploys)
+INDEX_BACKEND = os.getenv("INDEX_BACKEND", "disk")
 INDEX_CACHE_DIR = os.getenv("INDEX_CACHE_DIR", ".index_cache")
+
+# ── Session (chat-history) persistence ────────────────────────────────────
+#   SESSION_BACKEND = "mongo"  → chat_sessions collection (survives restarts)
+#                   = "memory" → in-process (lost on restart; used by tests)
+SESSION_BACKEND = os.getenv("SESSION_BACKEND", "mongo")
 LLM_MAX_TOKENS = 450
 LLM_TEMPERATURE = 0.05
 # Reasoning models (e.g. gpt-oss) spend part of max_tokens on hidden
@@ -110,7 +118,10 @@ HISTORY_TURNS_IN_PROMPT = 6
 # collections (password hashes, tokens, user records) would otherwise become
 # searchable chunks and could leak into an LLM answer — so they are ALWAYS
 # excluded, on top of anything added via .env.
-_ALWAYS_EXCLUDE_FROM_RAG = {"students_auth", "refresh_tokens", "users"}
+_ALWAYS_EXCLUDE_FROM_RAG = {
+    "students_auth", "refresh_tokens", "users",  # auth/identity/PII
+    "chat_sessions", "embedding_index",           # our own persistence collections
+}
 RAG_EXCLUDE_COLLECTIONS = _ALWAYS_EXCLUDE_FROM_RAG | {
     c.strip() for c in os.getenv("RAG_EXCLUDE_COLLECTIONS", "").split(",") if c.strip()
 }
