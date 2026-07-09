@@ -18,7 +18,10 @@ from app.db import (
 )
 from app.embeddings import build_index, embed_query
 from app.lexical import BM25
+from app.log import get_logger
 from app.retrieval import hybrid_rank
+
+log = get_logger("uploaded_files")
 
 
 class UploadedFilesStore:
@@ -34,13 +37,13 @@ class UploadedFilesStore:
         try:
             collections = list_uploaded_collections()
             if not collections:
-                print("ℹ️  No uploaded files found in MongoDB.")
+                log.info("ℹ️  No uploaded files found in MongoDB.")
                 return
             for col_name in collections:
                 self.load_one(col_name)
-            print(f"✅ Loaded {len(self._chunks)} uploaded file(s).")
+            log.info("✅ Loaded %d uploaded file(s).", len(self._chunks))
         except Exception as exc:
-            print(f"⚠️  Could not load uploaded files: {exc}")
+            log.warning("⚠️  Could not load uploaded files: %s", exc)
 
     def load_one(self, collection_name: str):
         """
@@ -65,12 +68,12 @@ class UploadedFilesStore:
             self._indexes[collection_name] = index_store.build_or_load(
                 f"uploaded::{collection_name}", chunks, build_index
             )
-            print(f"   ✅ Indexed uploaded file '{collection_name}' ({len(chunks)} chunks).")
+            log.info("✅ Indexed uploaded file '%s' (%d chunks).", collection_name, len(chunks))
         except Exception as exc:
             # Keep the chunks even if embeddings fail — search falls back to
             # a bounded slice — but drop any stale index.
             self._indexes.pop(collection_name, None)
-            print(f"   ⚠️  Failed to build embeddings for '{collection_name}': {exc}")
+            log.warning("⚠️  Failed to build embeddings for '%s': %s", collection_name, exc)
 
     def upload_json(self, collection_name: str, json_data) -> dict:
         col = get_uploaded_collection(collection_name)

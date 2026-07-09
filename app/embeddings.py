@@ -11,6 +11,9 @@ import numpy as np
 import requests
 
 from app import config
+from app.log import get_logger
+
+log = get_logger("embeddings")
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
@@ -33,7 +36,7 @@ def build_index(chunks: List[str]) -> np.ndarray:
     all_embeddings = []
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i:i + batch_size]
-        print(f"   Embedding batch {i // batch_size + 1} ({len(batch)} chunks) …")
+        log.debug("Embedding batch %d (%d chunks) …", i // batch_size + 1, len(batch))
         all_embeddings.append(embed_texts(batch))
     result = np.vstack(all_embeddings) if all_embeddings else np.array([], dtype=np.float32)
     norms = np.linalg.norm(result, axis=1, keepdims=True)
