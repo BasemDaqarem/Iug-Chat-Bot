@@ -20,6 +20,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.chatbot import IUGChatbot  # noqa: E402
+from app.sessions import SessionStore  # noqa: E402
 
 # ── الحالات المعيارية ──────────────────────────────────────────────────────
 # expect      : كل هذه النصوص يجب أن تظهر في الإجابة (حقائق ذهبية)
@@ -109,7 +110,7 @@ def print_report(results):
 
 def main():
     print("🚀 تهيئة البوت للتقييم …")
-    bot = IUGChatbot()
+    bot = IUGChatbot(sessions=SessionStore())  # in-memory — don't touch chat_sessions
     bot.initialize()
     results = evaluate(bot)
     counts = print_report(results)

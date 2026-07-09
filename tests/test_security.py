@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from app import chunking, config, embeddings
 from app.chatbot import IUGChatbot
+from app.sessions import SessionStore
 from tests.test_equivalence import FIXTURE_DATA, fake_embed
 
 
@@ -31,7 +32,7 @@ class TestRetrievalIsolation(unittest.TestCase):
 
     def setUp(self):
         embeddings.reset_query_cache()  # isolate the module-level query cache
-        self.bot = IUGChatbot()
+        self.bot = IUGChatbot(sessions=SessionStore())
         data = copy.deepcopy(FIXTURE_DATA)
         self.bot._kb._data = data
         self.bot._kb._chunks, self.bot._kb._chunk_meta = chunking.build_chunks(data)

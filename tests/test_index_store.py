@@ -61,5 +61,52 @@ class TestIndexStore(unittest.TestCase):
         np.testing.assert_array_equal(index_store.load("uploaded::file", self.chunks, "m"), other)
 
 
+class FakeIndexCol:
+    def __init__(self):
+        self.docs = {}
+
+    def find_one(self, query):
+        return self.docs.get(query["_id"])
+
+    def update_one(self, query, update, upsert=False):
+        self.docs[query["_id"]] = {"_id": query["_id"], **update["$set"]}
+
+
+class TestMongoBackend(unittest.TestCase):
+
+    def setUp(self):
+        self.chunks = ["مقطع أول", "مقطع ثاني", "CS202"]
+        self.index = np.arange(6, dtype=np.float32).reshape(3, 2)
+        self.col = FakeIndexCol()
+        for target, val in (("_index_col", self.col),):
+            p = patch.object(index_store, target, return_value=val)
+            p.start(); self.addCleanup(p.stop)
+        for attr, val in (("INDEX_BACKEND", "mongo"), ("EMBED_MODEL", "m")):
+            p = patch.object(config, attr, val)
+            p.start(); self.addCleanup(p.stop)
+
+    def test_save_load_roundtrip_via_mongo(self):
+        index_store.save("kb", self.chunks, self.index, "m")
+        self.assertIn("kb", self.col.docs)                 # stored in the collection
+        np.testing.assert_array_equal(index_store.load("kb", self.chunks, "m"), self.index)
+
+    def test_changed_chunks_invalidate(self):
+        index_store.save("kb", self.chunks, self.index, "m")
+        self.assertIsNone(index_store.load("kb", self.chunks + ["زائد"], "m"))
+
+    def test_build_or_load_builds_once_then_serves_from_mongo(self):
+        calls = []
+
+        def build(chunks):
+            calls.append(chunks)
+            return self.index
+
+        first = index_store.build_or_load("kb", self.chunks, build)
+        second = index_store.build_or_load("kb", self.chunks, build)
+        np.testing.assert_array_equal(first, self.index)
+        np.testing.assert_array_equal(second, self.index)
+        self.assertEqual(len(calls), 1)                    # 2nd served from Mongo
+
+
 if __name__ == "__main__":
     unittest.main()
