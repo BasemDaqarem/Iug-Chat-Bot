@@ -13,6 +13,7 @@ import requests
 
 from app import config
 from app.cache import TTLCache
+from app.errors import ConfigurationError, UpstreamServiceError
 from app.http_util import error_detail, provider_label, status_hint
 from app.log import get_logger
 
@@ -39,9 +40,9 @@ def reset_query_cache() -> None:
 def embed_texts(texts: List[str]) -> np.ndarray:
     provider = _provider()
     if not config.EMBED_API_KEY:
-        raise RuntimeError("❌ EMBED_API_KEY غير موجود في ملف .env — أضف مفتاح خدمة التضمين (embeddings).")
+        raise ConfigurationError("❌ EMBED_API_KEY غير موجود في ملف .env — أضف مفتاح خدمة التضمين (embeddings).")
     if not config.EMBED_API_URL:
-        raise RuntimeError("❌ EMBED_API_URL غير موجود في ملف .env — أضف رابط خدمة التضمين.")
+        raise ConfigurationError("❌ EMBED_API_URL غير موجود في ملف .env — أضف رابط خدمة التضمين.")
 
     headers = {
         "Content-Type": "application/json",
@@ -51,22 +52,23 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     try:
         resp = requests.post(config.EMBED_API_URL, headers=headers, json=data, timeout=120)
     except requests.exceptions.ConnectionError:
-        raise RuntimeError(
+        raise UpstreamServiceError(
             f"❌ تعذّر الاتصال بـ {provider} — تحقّق من الإنترنت ومن EMBED_API_URL في .env."
         )
     except requests.exceptions.Timeout:
-        raise RuntimeError(f"❌ {provider} استغرق وقتاً طويلاً في التضمين — حاول مرة أخرى.")
+        raise UpstreamServiceError(f"❌ {provider} استغرق وقتاً طويلاً في التضمين — حاول مرة أخرى.")
 
     if resp.status_code >= 400:
-        raise RuntimeError(
+        raise UpstreamServiceError(
             f"❌ {provider} رفض طلب التضمين (HTTP {resp.status_code}): "
-            f"{error_detail(resp)}{status_hint(resp.status_code)}"
+            f"{error_detail(resp)}{status_hint(resp.status_code)}",
+            details={"provider": provider, "status": resp.status_code},
         )
 
     try:
         vectors = [item["embedding"] for item in resp.json()["data"]]
     except (KeyError, ValueError, TypeError) as exc:
-        raise RuntimeError(f"❌ رد غير متوقّع من {provider} (لا يحتوي متجهات صالحة): {exc}")
+        raise UpstreamServiceError(f"❌ رد غير متوقّع من {provider} (لا يحتوي متجهات صالحة): {exc}")
     return np.array(vectors, dtype=np.float32)
 
 

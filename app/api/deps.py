@@ -7,8 +7,9 @@ handed to routes through this dependency — routes never construct services
 themselves, which keeps them thin and lets tests inject a fake bot.
 """
 
-from fastapi import HTTPException, Request, status
+from fastapi import Request
 
+from app.api.errors import ServiceUnavailableError
 from app.chatbot import IUGChatbot
 
 
@@ -17,8 +18,5 @@ def get_bot(request: Request) -> IUGChatbot:
     if bot is None:
         # Startup failed (e.g. MongoDB unreachable) — surface a clean 503
         # instead of an AttributeError from a half-initialized app.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="الخدمة لم تكتمل تهيئتها بعد — حاول لاحقاً.",
-        )
+        raise ServiceUnavailableError("الخدمة لم تكتمل تهيئتها بعد — حاول لاحقاً.")
     return bot
