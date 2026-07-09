@@ -19,6 +19,27 @@ class TestQuestionClassifiers(unittest.TestCase):
         self.assertTrue(privacy.is_academic_status_question("هل أنا في خطر؟"))
         self.assertFalse(privacy.is_academic_status_question("متى يبدأ الفصل؟"))
 
+    def test_wants_own_record(self):
+        for q in ("ما هي حالتي الأكاديمية؟", "كم معدلي؟", "ما ترتيبي على الدفعة؟", "ما تخصصي؟"):
+            self.assertTrue(privacy.wants_own_academic_record(q), q)
+        # public/other questions must NOT be treated as a personal-record query
+        for q in ("ما معدل القبول في الهندسة؟", "كم رسوم الطب؟", "ما معدل سالم؟"):
+            self.assertFalse(privacy.wants_own_academic_record(q), q)
+
+    def test_build_status_from_profile(self):
+        out = privacy.build_status_from_profile(
+            {"name": "محمد", "major": "هندسة حاسوب", "gpa": 88.5, "rank": 3,
+             "academic_status": "regular"})
+        self.assertIn("88.5", out)
+        self.assertIn("3", out)
+        self.assertIn("هندسة حاسوب", out)
+        self.assertIn("منتظم", out)
+
+    def test_build_status_flags_at_risk(self):
+        out = privacy.build_status_from_profile({"gpa": 60, "rank": 200, "academic_status": "at_risk"})
+        self.assertIn("خطر", out)
+        self.assertIn("مرشدك", out)  # advice line for at-risk students
+
     def test_ranking_detection(self):
         self.assertTrue(privacy.is_ranking_question("كم معدلي التراكمي؟"))
         self.assertTrue(privacy.is_ranking_question("what is my gpa"))

@@ -83,9 +83,11 @@ LLM_REASONING_EFFORT = "low"
 EMBED_BATCH_SIZE = 64
 HISTORY_TURNS_IN_PROMPT = 6
 
-# Collections that exist in the DB but should NOT be indexed as RAG content
-# (e.g. internal/ops collections). Configurable via .env, no code change
-# needed to add/remove a collection from the RAG pipeline.
-RAG_EXCLUDE_COLLECTIONS = {
+# Collections that must NEVER be indexed as RAG content. Auth/identity/PII
+# collections (password hashes, tokens, user records) would otherwise become
+# searchable chunks and could leak into an LLM answer — so they are ALWAYS
+# excluded, on top of anything added via .env.
+_ALWAYS_EXCLUDE_FROM_RAG = {"students_auth", "refresh_tokens", "users"}
+RAG_EXCLUDE_COLLECTIONS = _ALWAYS_EXCLUDE_FROM_RAG | {
     c.strip() for c in os.getenv("RAG_EXCLUDE_COLLECTIONS", "").split(",") if c.strip()
 }

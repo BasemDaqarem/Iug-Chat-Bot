@@ -40,6 +40,9 @@ class FakeBot:
     def chat_with_all_files(self, question, session_id):
         return self._answer(question, session_id, "uploaded_files_all")
 
+    def chat_as_student(self, question, session_id):
+        return self._answer(question, session_id, "student_profile")
+
     def chat_with_file(self, question, collection_name, session_id):
         return self._answer(question, session_id, "uploaded_file")
 
@@ -116,6 +119,11 @@ class TestChat(ApiBase):
         r = self.client.post("/api/chat/files", json={"question": "سؤال؟", "session_id": "s1"})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["source"], "uploaded_files_all")
+
+    def test_chat_student(self):
+        r = self.client.post("/api/chat/student", json={"question": "ما حالتي؟", "session_id": "12345"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["source"], "student_profile")
 
     def test_chat_one_file(self):
         r = self.client.post("/api/chat/files/ملف_علامات",
