@@ -144,18 +144,32 @@
 
   function onSuccess(data) {
     el.submit.classList.remove("is-loading");
-    el.submit.classList.add("is-done");
     const name = (data && data.profile && data.profile.name) || "";
-    const greet = mode === "login" ? "مرحباً بعودتك" : "تم إنشاء حسابك";
-    showMessage(name ? `${greet}، ${name} — جارٍ التحويل…` : "جارٍ التحويل…", "ok");
-    // Carry the authenticated identity to the chat page and redirect.
+
+    // Persist the identity FIRST, and only redirect if it truly stuck —
+    // otherwise the chat page (which guards on this key) would just bounce
+    // back here, looking like "login worked but nothing happened".
+    let stored = false;
     try {
       sessionStorage.setItem("iug_auth", JSON.stringify({
         student_id: (data && data.student_id) || el.id.value,
         name: name,
         profile: (data && data.profile) || {},
       }));
-    } catch (_) {}
+      stored = sessionStorage.getItem("iug_auth") !== null;
+    } catch (_) {
+      stored = false;
+    }
+
+    if (!stored) {
+      resetButton();
+      showMessage("تعذّر حفظ جلستك في المتصفح — أوقف وضع التصفّح الخاص أو فعّل التخزين ثم حاول مجدداً.", "err");
+      return;
+    }
+
+    el.submit.classList.add("is-done");
+    const greet = mode === "login" ? "مرحباً بعودتك" : "تم إنشاء حسابك";
+    showMessage(name ? `${greet}، ${name} — جارٍ التحويل…` : "جارٍ التحويل…", "ok");
     setTimeout(() => { window.location.href = "chat.html"; }, 900);
   }
 
