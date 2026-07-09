@@ -19,7 +19,23 @@ ACADEMIC_STATUS_KEYWORDS = [
 
 RANKING_KEYWORDS = ["معدل", "ترتيب", "gpa", "معدله", "ترتيبه", "معدلها", "ترتيبها"]
 
+# First-person markers → the student is asking about THEIR OWN record.
+OWN_RECORD_KEYWORDS = [
+    "معدلي", "ترتيبي", "حالتي", "وضعي", "مستواي", "درجاتي", "تخصصي",
+    "معدل تخرجي", "أنا في خطر", "انا في خطر", "أنا متعثر", "انا متعثر",
+]
+
 BLOCKED_ANSWER = "عذراً، بيانات الترتيب والمعدلات خاصة بكل طالب ولا يمكن الاطلاع عليها."
+
+# academic_status codes → Arabic label.
+_STATUS_LABELS = {
+    "regular": "منتظم",
+    "excellent": "ممتاز",
+    "good": "جيد",
+    "at_risk": "متعثّر (في خطر أكاديمي)",
+    "probation": "تحت إنذار أكاديمي",
+    "graduated": "متخرّج",
+}
 
 
 def is_academic_status_question(question: str) -> bool:
@@ -28,6 +44,33 @@ def is_academic_status_question(question: str) -> bool:
 
 def is_ranking_question(question: str) -> bool:
     return any(kw in question for kw in RANKING_KEYWORDS)
+
+
+def wants_own_academic_record(question: str) -> bool:
+    """True when the student is asking about THEIR OWN academic record
+    (status / gpa / rank), so we may answer from their own profile."""
+    return is_academic_status_question(question) or any(
+        k in question for k in OWN_RECORD_KEYWORDS
+    )
+
+
+def build_status_from_profile(profile: dict) -> str:
+    """A direct, non-LLM answer built ONLY from the student's own profile."""
+    gpa = profile.get("gpa", "غير متوفر")
+    rank = profile.get("rank", "غير متوفر")
+    major = profile.get("major")
+    status = profile.get("academic_status")
+
+    lines = ["📊 حالتك الأكاديمية:"]
+    if major:
+        lines.append(f"• التخصص: {major}")
+    lines.append(f"• المعدل التراكمي: {gpa}")
+    lines.append(f"• الترتيب على الدفعة: {rank}")
+    if status:
+        lines.append(f"• الوضع: {_STATUS_LABELS.get(status, status)}")
+        if status in ("at_risk", "probation"):
+            lines.append("⚠️ يُنصح بمراجعة مرشدك الأكاديمي لوضع خطة لتحسين مستواك.")
+    return "\n".join(lines)
 
 
 def find_sensitive_record(chunk_meta: List[dict], session_id: str) -> Optional[dict]:

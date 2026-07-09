@@ -75,7 +75,7 @@
     const dots = typing();
 
     try {
-      const res = await fetch("/api/chat/files", {
+      const res = await fetch("/api/chat/student", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, session_id: String(auth.student_id) }),

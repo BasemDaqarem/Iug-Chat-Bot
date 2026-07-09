@@ -10,7 +10,7 @@ from typing import List
 
 import numpy as np
 
-from app import config, embeddings, privacy
+from app import auth, config, embeddings, privacy
 from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
 from app.knowledge_base import KnowledgeBase
@@ -297,3 +297,26 @@ class IUGChatbot:
                 {"answer": answer, "top_chunks": list(relevant_chunks), "source": "uploaded_files_all"},
             )
         return result
+
+    def chat_as_student(self, question: str, student_id: str) -> dict:
+        """
+        Chat for an authenticated student. If they ask about THEIR OWN record
+        (status / gpa / rank), answer directly from their profile — looked up
+        server-side by student_id, so a student only ever sees their own data,
+        and the profile never rides the shared answer cache. Any other question
+        goes to the normal university-content search.
+
+        SECURITY: student_id is the caller-supplied session id. Until session
+        tokens (JWT) land, this trusts that id — the same gap that already
+        exists for the chat endpoints. It must be signed before real launch.
+        """
+        if privacy.wants_own_academic_record(question):
+            account = auth.find_account(student_id)
+            profile = (account or {}).get("profile") or {}
+            if profile:
+                answer = privacy.build_status_from_profile(profile)
+                self.push_history(student_id, question, answer)
+                return {"answer": answer, "top_chunks": [], "source": "student_profile"}
+
+        # Not a personal-record question (or no profile) → university content.
+        return self.chat_with_all_files(question, student_id)

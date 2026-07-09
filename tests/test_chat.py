@@ -77,6 +77,38 @@ class TestChatFlows(ChatBase):
         self.assertIn("سجل المحادثة السابقة", user_msg)
 
 
+class TestStudentChat(ChatBase):
+
+    PROFILE = {"name": "محمد أحمد", "major": "هندسة حاسوب", "gpa": 88.5,
+               "rank": 3, "academic_status": "regular"}
+
+    def test_own_record_answered_from_profile_without_llm(self):
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}):
+            res = self._chat("chat_as_student", "ما هي حالتي الأكاديمية؟", "12345")
+        self.assertEqual(self.llm_calls, [])          # answered from profile, no LLM
+        self.assertEqual(res["source"], "student_profile")
+        self.assertIn("88.5", res["answer"])
+        self.assertIn("هندسة حاسوب", res["answer"])
+
+    def test_my_gpa_question_uses_profile(self):
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}):
+            res = self._chat("chat_as_student", "كم معدلي؟", "12345")
+        self.assertEqual(res["source"], "student_profile")
+
+    def test_content_question_routes_to_files(self):
+        with patch("app.auth.find_account", return_value=None):
+            res = self._chat("chat_as_student", "كم رسوم كلية الطب؟", "12345")
+        self.assertEqual(res["source"], "uploaded_files_all")
+
+    def test_unknown_student_cannot_get_a_profile(self):
+        # No account for this id → nothing to expose → falls through to content.
+        with patch("app.auth.find_account", return_value=None):
+            res = self._chat("chat_as_student", "ما معدلي؟", "99999")
+        self.assertEqual(res["source"], "uploaded_files_all")
+
+
 class TestUploadedChatFlows(ChatBase):
 
     def test_chat_with_file(self):

@@ -14,6 +14,15 @@ from app import chunking, config, embeddings
 from app.chatbot import IUGChatbot
 from tests.test_equivalence import FIXTURE_DATA, fake_embed
 
+
+class TestRagExcludesAuthCollections(unittest.TestCase):
+    """Auth/identity collections (password hashes, tokens, PII) must never be
+    indexed as RAG content, or they could leak into an answer."""
+
+    def test_sensitive_collections_always_excluded(self):
+        for col in ("students_auth", "refresh_tokens", "users"):
+            self.assertIn(col, config.RAG_EXCLUDE_COLLECTIONS)
+
 # Identifiers of student 67890 (سالم) — must never surface for student 12345.
 OTHER_STUDENT_MARKERS = ["سالم يوسف", "67890", "70.1"]
 
