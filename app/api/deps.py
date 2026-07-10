@@ -10,9 +10,24 @@ themselves, which keeps them thin and lets tests inject a fake bot.
 from fastapi import Request
 
 from app import config, tokens
-from app.api.errors import ForbiddenError, ServiceUnavailableError, UnauthorizedError
+from app.api.errors import (
+    ForbiddenError,
+    ServiceUnavailableError,
+    TooManyRequestsError,
+    UnauthorizedError,
+)
 from app.chatbot import IUGChatbot
+from app.ratelimit import RateLimiter
 from app.tokens import InvalidTokenError
+
+_chat_limiter = RateLimiter(config.RATE_LIMIT_CHAT_PER_MIN)
+_login_limiter = RateLimiter(config.RATE_LIMIT_LOGIN_PER_MIN)
+
+
+def reset_rate_limits() -> None:
+    """Clear all rate-limit counters (used by tests, which share a client IP)."""
+    _chat_limiter.reset()
+    _login_limiter.reset()
 
 
 def get_bot(request: Request) -> IUGChatbot:
@@ -36,6 +51,28 @@ def get_current_student(request: Request) -> str:
         return tokens.decode_token(token.strip())
     except InvalidTokenError as exc:
         raise UnauthorizedError(exc.message)
+
+
+def rate_limited_student(request: Request) -> str:
+    """Authenticated student id, additionally rate-limited per student. Used by
+    the chat endpoints so one student can't hammer the LLM/embeddings."""
+    student_id = get_current_student(request)
+    allowed, retry = _chat_limiter.check(f"chat:{student_id}")
+    if not allowed:
+        raise TooManyRequestsError(
+            "طلبات كثيرة خلال وقت قصير — تمهّل قليلاً ثم أعد المحاولة.", retry_after=retry
+        )
+    return student_id
+
+
+def login_rate_limit(request: Request) -> None:
+    """Throttle login/registration by client IP to blunt brute-force attempts."""
+    ip = request.client.host if request.client else "unknown"
+    allowed, retry = _login_limiter.check(f"login:{ip}")
+    if not allowed:
+        raise TooManyRequestsError(
+            "محاولات دخول كثيرة — انتظر قليلاً ثم حاول مجدداً.", retry_after=retry
+        )
 
 
 def require_admin(request: Request) -> None:

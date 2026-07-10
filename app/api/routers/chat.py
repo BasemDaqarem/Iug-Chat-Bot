@@ -14,7 +14,7 @@ the event loop or other requests.
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot, get_current_student
+from app.api.deps import get_bot, rate_limited_student
 from app.api.errors import NotFoundError
 from app.api.schemas import ChatResponse, ErrorResponse, StudentChatRequest
 from app.chatbot import IUGChatbot
@@ -43,7 +43,7 @@ router = APIRouter(
 )
 def chat_student(
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    student_id: str = Depends(rate_limited_student),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
     return ChatResponse(**bot.chat_as_student(body.question, student_id))
@@ -57,7 +57,7 @@ def chat_student(
 )
 def chat(
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    student_id: str = Depends(rate_limited_student),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
     return ChatResponse(**bot.chat(body.question, student_id))
@@ -71,7 +71,7 @@ def chat(
 )
 def chat_all_files(
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    student_id: str = Depends(rate_limited_student),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
     return ChatResponse(**bot.chat_with_all_files(body.question, student_id))
@@ -87,7 +87,7 @@ def chat_all_files(
 def chat_one_file(
     collection_name: str,
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    student_id: str = Depends(rate_limited_student),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
     files = {f["collection"] for f in bot.get_uploaded_files_list()}

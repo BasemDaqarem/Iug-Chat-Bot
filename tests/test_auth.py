@@ -63,6 +63,8 @@ class TestAuthService(unittest.TestCase):
 class AuthApiBase(unittest.TestCase):
 
     def setUp(self):
+        from app.api import deps
+        deps.reset_rate_limits()          # tests share a client IP
         self.col = FakeCollection([{
             "student_id": "12345",
             "password_hash": auth.hash_password("pin1234"),
@@ -116,6 +118,19 @@ class TestLogin(AuthApiBase):
     def test_short_password_is_422(self):
         r = self.client.post("/api/auth/login", json={"student_id": "12345", "password": "1"})
         self.assertEqual(r.status_code, 422)
+
+
+class TestLoginRateLimit(AuthApiBase):
+
+    def test_login_is_throttled_after_too_many_attempts(self):
+        from app.api import deps
+        with patch.object(deps._login_limiter, "max", 3):
+            deps._login_limiter.reset()
+            for _ in range(3):
+                self.client.post("/api/auth/login", json={"student_id": "12345", "password": "wrong"})
+            r = self.client.post("/api/auth/login", json={"student_id": "12345", "password": "wrong"})
+        self.assertEqual(r.status_code, 429)          # brute-force blunted
+        self.assertEqual(r.json()["error"]["code"], "RATE_LIMITED")
 
 
 class TestRegister(AuthApiBase):
