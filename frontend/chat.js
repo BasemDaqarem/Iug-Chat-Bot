@@ -36,6 +36,43 @@
     `أهلاً ${firstName} 👋\nأنا مساعدك في الجامعة الإسلامية بغزة. اسألني عن الرسوم، ` +
     `الكليات، التخصصات، القبول، المنح، أو أي خدمة طلابية.`;
 
+  // ---------- lightweight, XSS-safe markdown (only what the bot emits) ------
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function inline(s) {
+    s = escapeHtml(s);
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");        // **bold**
+    s = s.replace(/(https?:\/\/[^\s<]+)/g,
+                  '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    s = s.replace(/([\w.+-]+@[\w-]+\.[\w.-]+)/g, '<a href="mailto:$1">$1</a>');
+    return s;
+  }
+  function renderMarkdown(text) {
+    const lines = String(text).split("\n");
+    let html = "", listType = null, buf = [];
+    const flush = () => {
+      if (listType) { html += `<${listType}>${buf.join("")}</${listType}>`; buf = []; listType = null; }
+    };
+    for (const raw of lines) {
+      const line = raw.trim();
+      const bullet = line.match(/^[-•*]\s+(.*)/);
+      const numbered = line.match(/^\d+[.)]\s+(.*)/);
+      if (bullet) {
+        if (listType !== "ul") { flush(); listType = "ul"; }
+        buf.push(`<li>${inline(bullet[1])}</li>`);
+      } else if (numbered) {
+        if (listType !== "ol") { flush(); listType = "ol"; }
+        buf.push(`<li>${inline(numbered[1])}</li>`);
+      } else {
+        flush();
+        if (line) html += `<p>${inline(line)}</p>`;
+      }
+    }
+    flush();
+    return html;
+  }
+
   // ---------- helpers ----------
   function bubble(text, who) {
     const wrap = document.createElement("div");
@@ -47,7 +84,9 @@
     }
     const b = document.createElement("div");
     b.className = "msg__bubble";
-    b.textContent = text;
+    // bot output is trusted-format markdown (escaped first); user text stays plain
+    if (who === "bot") b.innerHTML = renderMarkdown(text);
+    else b.textContent = text;
     wrap.appendChild(b);
     el.scroll.appendChild(wrap);
     scrollToEnd();

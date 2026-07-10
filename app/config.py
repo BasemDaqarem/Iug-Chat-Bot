@@ -33,6 +33,12 @@ CACHE_ANSWER_MAXSIZE = int(os.getenv("CACHE_ANSWER_MAXSIZE", "512"))
 CACHE_EMBED_TTL = int(os.getenv("CACHE_EMBED_TTL", "86400"))         # 24 hours
 CACHE_EMBED_MAXSIZE = int(os.getenv("CACHE_EMBED_MAXSIZE", "2048"))
 
+# ── Rate limiting (per fixed window) ──────────────────────────────────────
+# Protects the LLM/embeddings from bursts and login from brute force. In-memory
+# (per-process) for now; move to Redis when running multiple instances.
+RATE_LIMIT_CHAT_PER_MIN = int(os.getenv("RATE_LIMIT_CHAT_PER_MIN", "30"))
+RATE_LIMIT_LOGIN_PER_MIN = int(os.getenv("RATE_LIMIT_LOGIN_PER_MIN", "10"))
+
 # ── Logging ───────────────────────────────────────────────────────────────
 # DEBUG | INFO | WARNING | ERROR — consumed by app.log (one console handler).
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
