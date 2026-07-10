@@ -70,6 +70,15 @@
   color:#241c05; font-weight:600; border-bottom-left-radius:5px;
   box-shadow:0 8px 20px -10px rgba(212,175,55,.6);
 }
+
+/* rendered markdown inside bot bubbles */
+.msg--bot .msg__bubble p { margin:0 0 7px; }
+.msg--bot .msg__bubble p:last-child { margin-bottom:0; }
+.msg--bot .msg__bubble ul,
+.msg--bot .msg__bubble ol { margin:5px 0; padding-inline-start:22px; }
+.msg--bot .msg__bubble li { margin:3px 0; }
+.msg--bot .msg__bubble strong { color:var(--gold-hi); font-weight:800; }
+.msg--bot .msg__bubble a { color:var(--gold); text-decoration:underline; word-break:break-all; }
 @keyframes pop { from { opacity:0; transform:translateY(8px) scale(.98); } to { opacity:1; transform:none; } }
 
 /* typing indicator */

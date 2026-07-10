@@ -78,6 +78,8 @@ class FakeBot:
 class ApiBase(unittest.TestCase):
 
     def setUp(self):
+        from app.api import deps
+        deps.reset_rate_limits()          # tests share a client IP
         self.bot = FakeBot()
         self._admin = patch.object(config, "ADMIN_API_KEY", "test-admin-key")
         self._admin.start()
@@ -319,6 +321,31 @@ class TestStaticFrontend(ApiBase):
     def test_frontend_assets_are_version_busted(self):
         html = self.client.get("/app/index.html").text
         self.assertIn("app.js?v=", html)  # cache-busting query present
+
+
+class TestRateLimit(ApiBase):
+
+    def test_chat_is_rate_limited_per_student(self):
+        from app.api import deps
+        with patch.object(deps._chat_limiter, "max", 2):
+            deps._chat_limiter.reset()
+            h = self.auth("rl_student")
+            for _ in range(2):
+                ok = self.client.post("/api/chat/student", json={"question": "س"}, headers=h)
+                self.assertEqual(ok.status_code, 200)
+            blocked = self.client.post("/api/chat/student", json={"question": "س"}, headers=h)
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.json()["error"]["code"], "RATE_LIMITED")
+        self.assertIn("Retry-After", blocked.headers)
+
+    def test_limit_is_per_student_not_global(self):
+        from app.api import deps
+        with patch.object(deps._chat_limiter, "max", 1):
+            deps._chat_limiter.reset()
+            self.client.post("/api/chat/student", json={"question": "س"}, headers=self.auth("A"))
+            # a DIFFERENT student is unaffected by A's usage
+            other = self.client.post("/api/chat/student", json={"question": "س"}, headers=self.auth("B"))
+        self.assertEqual(other.status_code, 200)
 
 
 class TestDocs(ApiBase):

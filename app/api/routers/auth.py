@@ -5,13 +5,20 @@ Thin delegates to app.auth; all failures use the unified error envelope
 (401 invalid credentials, 409 duplicate id, 422 validation).
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app import auth, tokens
+from app.api.deps import login_rate_limit
 from app.api.errors import ConflictError, UnauthorizedError
 from app.api.schemas import AuthResponse, ErrorResponse, LoginRequest, RegisterRequest
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+# Login & registration are IP-rate-limited to blunt brute-force / abuse.
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"],
+    dependencies=[Depends(login_rate_limit)],
+    responses={429: {"model": ErrorResponse, "description": "محاولات كثيرة — انتظر قليلاً"}},
+)
 
 
 def _to_response(account: dict) -> AuthResponse:

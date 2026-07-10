@@ -46,10 +46,11 @@ class APIError(Exception):
     status_code = 500
     code = "INTERNAL_ERROR"
 
-    def __init__(self, message: str, details=None, *, status_code=None, code=None):
+    def __init__(self, message: str, details=None, *, status_code=None, code=None, headers=None):
         super().__init__(message)
         self.message = message
         self.details = details
+        self.headers = headers or {}
         if status_code is not None:
             self.status_code = status_code
         if code is not None:
@@ -84,6 +85,13 @@ class ServiceUnavailableError(APIError):
     status_code, code = 503, "SERVICE_UNAVAILABLE"
 
 
+class TooManyRequestsError(APIError):
+    status_code, code = 429, "RATE_LIMITED"
+
+    def __init__(self, message: str, retry_after: int = 1):
+        super().__init__(message, headers={"Retry-After": str(retry_after)})
+
+
 # Fallback machine codes for raw HTTPExceptions (e.g. FastAPI's own 404/405).
 _STATUS_CODE_NAMES = {
     400: "BAD_REQUEST", 401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND",
@@ -97,7 +105,8 @@ _STATUS_CODE_NAMES = {
 #  Envelope + handlers
 # ═════════════════════════════════════════════════════════════════════════
 
-def _render(status: int, code: str, message: str, details, request: Request) -> JSONResponse:
+def _render(status: int, code: str, message: str, details, request: Request,
+            headers=None) -> JSONResponse:
     body = {
         "success": False,
         "error": {
@@ -108,7 +117,7 @@ def _render(status: int, code: str, message: str, details, request: Request) -> 
             "path": request.url.path,
         },
     }
-    return JSONResponse(status_code=status, content=body)
+    return JSONResponse(status_code=status, content=body, headers=headers)
 
 
 def setup_error_handlers(app: FastAPI) -> None:
@@ -118,7 +127,8 @@ def setup_error_handlers(app: FastAPI) -> None:
         if exc.status_code >= 500:
             log.error("APIError %d %s at %s: %s",
                       exc.status_code, exc.code, request.url.path, exc.message)
-        return _render(exc.status_code, exc.code, exc.message, exc.details, request)
+        return _render(exc.status_code, exc.code, exc.message, exc.details, request,
+                       headers=exc.headers)
 
     @app.exception_handler(InvalidTokenError)
     async def _invalid_token(request: Request, exc: InvalidTokenError):
