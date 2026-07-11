@@ -167,6 +167,28 @@ class IUGChatbot:
         )
         return asks_hourly_fee and not names_level
 
+    @staticmethod
+    def _trusted_direct_answer(question: str) -> str:
+        """Return canonical answers for a tiny set of verified core facts.
+
+        These are intentionally deterministic because confusing Ramallah with
+        Palestine's capital, or failing to provide IUG's own official URL,
+        would make the student assistant confidently misleading.
+        """
+        normalized = normalize_arabic(question).lower()
+        if "عاصم" in normalized and "فلسطين" in normalized:
+            return "عاصمة فلسطين هي القدس."
+        if (
+            any(term in normalized for term in ("رابط", "موقع"))
+            and "جامع" in normalized
+            and any(term in normalized for term in ("اسلام", "غزه", "الجامعه"))
+        ):
+            return (
+                "رابط الموقع الرسمي للجامعة الإسلامية بغزة هو: "
+                "https://www.iugaza.edu.ps/"
+            )
+        return ""
+
     def _search_all_for_question(self, question: str, top_k: int) -> List[str]:
         """Retrieve uploaded-file evidence, expanding ambiguous fee queries.
 
@@ -334,11 +356,13 @@ class IUGChatbot:
         uploaded files merged into a single global ranking — the LLM only
         ever sees the best top-K chunks overall.
         """
-        if self._uploaded.is_empty():
+        trusted_answer = self._trusted_direct_answer(question)
+        if trusted_answer:
+            self.push_history(session_id, question, trusted_answer)
             return {
-                "answer":     "لا توجد ملفات مرفوعة حالياً.",
+                "answer": trusted_answer,
                 "top_chunks": [],
-                "source":     "uploaded_files_all",
+                "source": "trusted_fact",
             }
 
         cacheable = config.CACHE_ENABLED and not self.get_history(session_id)
@@ -350,7 +374,11 @@ class IUGChatbot:
                 return dict(cached)
 
         generic_engineering_fee = self._is_generic_engineering_hourly_fee(question)
-        relevant_chunks = self._search_all_for_question(question, top_k)
+        relevant_chunks = (
+            []
+            if self._uploaded.is_empty()
+            else self._search_all_for_question(question, top_k)
+        )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
         if generic_engineering_fee:

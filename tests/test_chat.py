@@ -121,6 +121,21 @@ class TestStudentChat(ChatBase):
 
 class TestUploadedChatFlows(ChatBase):
 
+    def test_palestine_capital_uses_trusted_fact_without_llm(self):
+        res = self._chat("chat_with_all_files", "ما هي عاصمة فلسطين؟", "capital-sess")
+
+        self.assertEqual(self.llm_calls, [])
+        self.assertEqual(res["source"], "trusted_fact")
+        self.assertIn("القدس", res["answer"])
+        self.assertNotIn("رام الله", res["answer"])
+
+    def test_official_university_url_uses_trusted_fact_without_llm(self):
+        res = self._chat("chat_with_all_files", "ما هو رابط موقع الجامعة؟", "url-sess")
+
+        self.assertEqual(self.llm_calls, [])
+        self.assertEqual(res["source"], "trusted_fact")
+        self.assertIn("https://www.iugaza.edu.ps/", res["answer"])
+
     def test_chat_with_file(self):
         res = self._chat("chat_with_file", "كم علامة الرياضيات؟", "ملف_علامات", "sess")
         self.assertEqual(res["source"], "uploaded_file")
@@ -173,11 +188,16 @@ class TestUploadedChatFlows(ChatBase):
 
         search.assert_called_once()
 
-    def test_chat_with_all_files_empty(self):
+    def test_general_question_still_reaches_llm_when_files_are_empty(self):
         self.bot._uploaded._chunks = {}
         self.bot._uploaded._indexes = {}
-        res = self._chat("chat_with_all_files", "سؤال", "sess")
-        self.assertEqual(res["answer"], "لا توجد ملفات مرفوعة حالياً.")
+        res = self._chat("chat_with_all_files", "ما هي عاصمة مصر؟", "sess")
+
+        self.assertEqual(res["source"], "uploaded_files_all")
+        self.assertEqual(len(self.llm_calls), 1)
+        system = self._system_of_last_call()
+        self.assertIn("معرفتك العامة الموثوقة", system)
+        self.assertIn("عاصمة فلسطين هي القدس", system)
 
 
 if __name__ == "__main__":
