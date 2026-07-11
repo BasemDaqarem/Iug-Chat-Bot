@@ -26,6 +26,30 @@ class TestQuestionClassifiers(unittest.TestCase):
         for q in ("ما معدل القبول في الهندسة؟", "كم رسوم الطب؟", "ما معدل سالم؟"):
             self.assertFalse(privacy.wants_own_academic_record(q), q)
 
+    def test_wants_own_profile_identity_and_summary(self):
+        for q in ("ما هو اسمي؟", "من أنا؟", "ما هي بياناتي المتوفرة؟"):
+            self.assertTrue(privacy.wants_own_profile(q), q)
+
+    def test_build_profile_identity_answer(self):
+        profile = {"name": "محمد", "data_source": "self_reported_demo"}
+        out = privacy.build_profile_answer("ما هو اسمي؟", profile)
+        self.assertIn("محمد", out)
+        self.assertIn("تجريبية", out)
+
+    def test_build_profile_summary(self):
+        profile = {
+            "name": "محمد",
+            "major": "هندسة الحاسوب",
+            "gpa": 88.5,
+            "rank": 3,
+            "academic_status": "regular",
+            "data_source": "self_reported_demo",
+        }
+        out = privacy.build_profile_answer("ما بياناتي المتوفرة؟", profile)
+        for value in ("محمد", "هندسة الحاسوب", "88.5", "3", "منتظم"):
+            self.assertIn(value, out)
+        self.assertIn("ليست سجلاً رسمياً", out)
+
     def test_build_status_from_profile(self):
         out = privacy.build_status_from_profile(
             {"name": "محمد", "major": "هندسة حاسوب", "gpa": 88.5, "rank": 3,

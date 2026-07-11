@@ -49,5 +49,13 @@ def login(body: LoginRequest) -> AuthResponse:
 def register(body: RegisterRequest) -> AuthResponse:
     if auth.find_account(body.student_id) is not None:
         raise ConflictError("هذا الرقم الجامعي مسجّل مسبقاً — سجّل الدخول بدلاً من ذلك.")
-    account = auth.create_account(body.student_id, body.password, body.name)
+    account = auth.create_account(
+        body.student_id,
+        body.password,
+        body.name,
+        body.major,
+        body.gpa,
+        body.rank,
+        body.academic_status,
+    )
     return _to_response(account)

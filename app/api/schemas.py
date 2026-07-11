@@ -6,7 +6,7 @@ so the OpenAPI docs (/docs) are always accurate and the frontend can generate
 typed clients directly from them.
 """
 
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,6 +29,12 @@ class LoginRequest(BaseModel):
 
 class RegisterRequest(LoginRequest):
     name: str = Field(..., min_length=2, max_length=80, description="اسم الطالب.")
+    major: str = Field(..., min_length=2, max_length=120, description="تخصص الطالب (بيانات تجريبية).")
+    gpa: float = Field(..., ge=0, le=100, description="المعدل التراكمي من 100 (بيانات تجريبية).")
+    rank: int = Field(..., ge=1, le=1_000_000, description="الترتيب على الدفعة (بيانات تجريبية).")
+    academic_status: Literal[
+        "regular", "excellent", "good", "at_risk", "probation", "graduated"
+    ] = Field(..., description="الحالة الأكاديمية التي يحددها الطالب لأغراض العرض.")
 
 
 class StudentProfile(BaseModel):
@@ -40,6 +46,8 @@ class StudentProfile(BaseModel):
     gpa: Optional[float] = None
     rank: Optional[int] = None
     academic_status: Optional[str] = None
+    data_source: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
