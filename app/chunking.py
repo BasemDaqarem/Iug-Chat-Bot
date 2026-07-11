@@ -157,9 +157,14 @@ def build_chunks(data: dict) -> Tuple[List[str], List[dict]]:
     return chunks, meta
 
 
-def build_uploaded_chunks(docs: List[dict], collection_name: str) -> List[str]:
+def build_uploaded_chunks_with_doc_indexes(
+    docs: List[dict],
+    collection_name: str,
+) -> Tuple[List[str], List[int]]:
+    """Build uploaded chunks and preserve each chunk's source document index."""
     chunks = []
-    for doc in docs:
+    doc_indexes = []
+    for doc_index, doc in enumerate(docs):
         doc = dict(doc)
         doc.pop("_id", None)
         doc.pop("__file_meta__", None)
@@ -167,4 +172,10 @@ def build_uploaded_chunks(docs: List[dict], collection_name: str) -> List[str]:
         if flat_lines:
             chunk_text = f"[ملف: {collection_name}]\n" + "\n".join(flat_lines)
             chunks.append(chunk_text)
+            doc_indexes.append(doc_index)
+    return chunks, doc_indexes
+
+
+def build_uploaded_chunks(docs: List[dict], collection_name: str) -> List[str]:
+    chunks, _doc_indexes = build_uploaded_chunks_with_doc_indexes(docs, collection_name)
     return chunks

@@ -365,6 +365,15 @@ class IUGChatbot:
                 "source": "trusted_fact",
             }
 
+        admission = self._uploaded.resolve_admission(question)
+        if admission is not None:
+            self.push_history(session_id, question, admission.answer)
+            return {
+                "answer": admission.answer,
+                "top_chunks": admission.top_chunks,
+                "source": "structured_admission",
+            }
+
         cacheable = config.CACHE_ENABLED and not self.get_history(session_id)
         cache_key = self._cache_key("all_files", question) if cacheable else None
         if cacheable:

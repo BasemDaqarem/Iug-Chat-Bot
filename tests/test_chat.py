@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from app import chunking, config, embeddings
 from app.chatbot import IUGChatbot
+from app.admissions import AdmissionFact, AdmissionResolution
 from app.sessions import SessionStore
 from tests.test_equivalence import FIXTURE_DATA, UPLOADED_DOCS, fake_embed
 
@@ -128,6 +129,36 @@ class TestStudentChat(ChatBase):
 
 
 class TestUploadedChatFlows(ChatBase):
+
+    def test_structured_admission_answer_skips_rag_and_llm(self):
+        fact = AdmissionFact(
+            faculty="تكنولوجيا المعلومات",
+            program="تكنولوجيا المعلومات",
+            degree="بكالوريوس",
+            branches=("علمي",),
+            min_percentage=65,
+            source="ملف القبول",
+            path="doc[0]",
+        )
+        resolution = AdmissionResolution(
+            "برنامج تكنولوجيا المعلومات: 65% للفرع العلمي.",
+            (fact,),
+        )
+        with patch.object(
+            self.bot._uploaded, "resolve_admission", return_value=resolution
+        ), patch.object(
+            self.bot._uploaded, "search_all",
+            side_effect=AssertionError("RAG must not run"),
+        ):
+            res = self._chat(
+                "chat_with_all_files",
+                "ما معدل قبول تكنولوجيا المعلومات؟",
+                "admission-sess",
+            )
+
+        self.assertEqual(self.llm_calls, [])
+        self.assertEqual(res["source"], "structured_admission")
+        self.assertIn("65%", res["answer"])
 
     def test_palestine_capital_uses_trusted_fact_without_llm(self):
         res = self._chat("chat_with_all_files", "ما هي عاصمة فلسطين؟", "capital-sess")
