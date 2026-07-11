@@ -350,6 +350,8 @@ class IUGChatbot:
         question: str,
         session_id: str,
         top_k: int = config.TOP_K,
+        *,
+        private_context: str | None = None,
     ) -> dict:
         """
         Same idea as chat_with_file(), but searches across ALL currently
@@ -374,7 +376,13 @@ class IUGChatbot:
                 "source": "structured_admission",
             }
 
-        cacheable = config.CACHE_ENABLED and not self.get_history(session_id)
+        # A student-specific prompt must never read from or write to the
+        # answer cache shared by public users.
+        cacheable = (
+            config.CACHE_ENABLED
+            and private_context is None
+            and not self.get_history(session_id)
+        )
         cache_key = self._cache_key("all_files", question) if cacheable else None
         if cacheable:
             cached = self._answer_cache.get(cache_key)
@@ -390,6 +398,17 @@ class IUGChatbot:
         )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
+        if private_context is not None:
+            system += f"""
+
+{private_context}
+
+تعليمات السياق الخاص:
+- افهم سؤال الطالب كاملاً؛ لا تتوقف عند كلمة مثل «معدلي» أو «ترتيبي».
+- استخدم بيانات الطالب فقط عندما تكون مرتبطة بالسؤال، ولا تسرد الملف كاملاً إلا إذا طلبه.
+- إذا جمع السؤال بين بياناته وموضوع جامعي كالمنح، فادمج بياناته مع المقاطع العامة المسترجعة للإجابة عن المقصود.
+- لا تذكر أو تستنتج بيانات طالب آخر.
+"""
         if generic_engineering_fee:
             system += """
 
@@ -398,7 +417,8 @@ class IUGChatbot:
 وُجدا في المقاطع أعلاه. لا تخلط بينهما، ولا تخترع قيمة لم ترد في المقاطع.
 """
         answer  = self._ask_llm(system, question, session_id)
-        result = {"answer": answer, "top_chunks": relevant_chunks, "source": "uploaded_files_all"}
+        source = "student_context_rag" if private_context is not None else "uploaded_files_all"
+        result = {"answer": answer, "top_chunks": relevant_chunks, "source": source}
         if cacheable:
             self._answer_cache.set(
                 cache_key,
@@ -408,11 +428,10 @@ class IUGChatbot:
 
     def chat_as_student(self, question: str, student_id: str) -> dict:
         """
-        Chat for an authenticated student. If they ask about THEIR OWN record
-        (status / gpa / rank), answer directly from their profile — looked up
-        server-side by student_id, so a student only ever sees their own data,
-        and the profile never rides the shared answer cache. Any other question
-        goes to the normal university-content search.
+        Chat for an authenticated student. Their approved profile fields are
+        fetched server-side and supplied as private LLM context alongside the
+        public university retrieval. There is no keyword shortcut, so compound
+        questions are processed in full.
 
         SECURITY: callers pass the student_id extracted from the verified JWT
         (see app.api.deps.get_current_student), never a raw client field — so
@@ -423,13 +442,15 @@ class IUGChatbot:
             self.push_history(student_id, question, privacy.BLOCKED_ANSWER)
             return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": [], "source": "privacy_block"}
 
-        if privacy.wants_own_profile(question):
-            account = auth.find_account(student_id)
-            profile = (account or {}).get("profile") or {}
-            if profile:
-                answer = privacy.build_profile_answer(question, profile)
-                self.push_history(student_id, question, answer)
-                return {"answer": answer, "top_chunks": [], "source": "student_profile"}
-
-        # Not a personal-record question (or no profile) → university content.
-        return self.chat_with_all_files(question, student_id)
+        account = auth.find_account(student_id)
+        profile = (account or {}).get("profile") or {}
+        private_context = (
+            privacy.format_authenticated_profile_context(profile)
+            if profile
+            else ""
+        )
+        return self.chat_with_all_files(
+            question,
+            student_id,
+            private_context=private_context,
+        )

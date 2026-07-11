@@ -101,7 +101,7 @@ class ChatResponse(BaseModel):
         default="knowledge_base",
         description=(
             "مصدر الإجابة: knowledge_base | uploaded_file | uploaded_files_all | "
-            "structured_admission | student_profile | trusted_fact"
+            "structured_admission | student_context_rag | trusted_fact"
         ),
     )
 

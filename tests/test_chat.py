@@ -1,6 +1,6 @@
 """
 Behavioral tests for the new chat pipeline (access-filtered hybrid retrieval).
-These assert the *guarantees* of chat — privacy shortcuts, identity handling,
+These assert the *guarantees* of chat — private context, identity handling,
 history folding, uploaded-file flows — rather than diffing against the legacy
 monolith (whose retrieval behavior we have intentionally superseded).
 """
@@ -84,33 +84,77 @@ class TestStudentChat(ChatBase):
     PROFILE = {"name": "محمد أحمد", "major": "هندسة حاسوب", "gpa": 88.5,
                "rank": 3, "academic_status": "regular"}
 
-    def test_own_record_answered_from_profile_without_llm(self):
+    def test_own_record_reaches_llm_with_private_profile_context(self):
         with patch("app.auth.find_account",
                    return_value={"student_id": "12345", "profile": self.PROFILE}):
             res = self._chat("chat_as_student", "ما هي حالتي الأكاديمية؟", "12345")
-        self.assertEqual(self.llm_calls, [])          # answered from profile, no LLM
-        self.assertEqual(res["source"], "student_profile")
-        self.assertIn("88.5", res["answer"])
-        self.assertIn("هندسة حاسوب", res["answer"])
+        self.assertEqual(len(self.llm_calls), 1)
+        self.assertEqual(res["source"], "student_context_rag")
+        system = self._system_of_last_call()
+        self.assertIn("بيانات الطالب الحالي", system)
+        self.assertIn("88.5", system)
+        self.assertIn("هندسة حاسوب", system)
 
-    def test_my_gpa_question_uses_profile(self):
+    def test_my_gpa_question_uses_llm_with_profile_context(self):
         with patch("app.auth.find_account",
                    return_value={"student_id": "12345", "profile": self.PROFILE}):
             res = self._chat("chat_as_student", "كم معدلي؟", "12345")
-        self.assertEqual(res["source"], "student_profile")
+        self.assertEqual(len(self.llm_calls), 1)
+        self.assertEqual(res["source"], "student_context_rag")
+        self.assertIn("88.5", self._system_of_last_call())
 
-    def test_my_name_question_uses_profile_without_llm(self):
+    def test_my_name_question_uses_llm_with_profile_context(self):
         with patch("app.auth.find_account",
                    return_value={"student_id": "12345", "profile": self.PROFILE}):
             res = self._chat("chat_as_student", "ما هو اسمي؟", "12345")
-        self.assertEqual(self.llm_calls, [])
-        self.assertEqual(res["source"], "student_profile")
-        self.assertIn("محمد أحمد", res["answer"])
+        self.assertEqual(len(self.llm_calls), 1)
+        self.assertEqual(res["source"], "student_context_rag")
+        self.assertIn("محمد أحمد", self._system_of_last_call())
+
+    def test_scholarship_question_with_gpa_processes_the_full_question(self):
+        scholarship_chunk = "منحة التفوق: يمكن للطالب التقدم وفق شروط المنح المنشورة."
+        question = "معدلي 90 ايش في منح متاحة الي"
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question",
+                          return_value=[scholarship_chunk]) as search:
+            res = self._chat("chat_as_student", question, "12345")
+
+        search.assert_called_once_with(question, config.TOP_K)
+        self.assertEqual(len(self.llm_calls), 1)
+        self.assertEqual(res["source"], "student_context_rag")
+        system = self._system_of_last_call()
+        self.assertIn("88.5", system)
+        self.assertIn(scholarship_chunk, system)
+        self.assertIn(question, self.llm_calls[-1]["messages"][1]["content"])
+        self.assertEqual(res["top_chunks"], [scholarship_chunk])
+        self.assertNotIn("محمد أحمد", "\n".join(res["top_chunks"]))
+
+    def test_private_profile_answers_are_never_shared_through_cache(self):
+        profiles = {
+            "11111": {**self.PROFILE, "name": "الطالب الأول", "gpa": 91.0},
+            "22222": {**self.PROFILE, "name": "الطالب الثاني", "gpa": 72.0},
+        }
+
+        def find_account(student_id):
+            return {"student_id": student_id, "profile": profiles[student_id]}
+
+        with patch("app.auth.find_account", side_effect=find_account):
+            self._chat("chat_as_student", "كم معدلي؟", "11111")
+            self._chat("chat_as_student", "كم معدلي؟", "22222")
+
+        self.assertEqual(len(self.llm_calls), 2)
+        first_system = self.llm_calls[0]["messages"][0]["content"]
+        second_system = self.llm_calls[1]["messages"][0]["content"]
+        self.assertIn("91.0", first_system)
+        self.assertNotIn("72.0", first_system)
+        self.assertIn("72.0", second_system)
+        self.assertNotIn("91.0", second_system)
 
     def test_content_question_routes_to_files(self):
         with patch("app.auth.find_account", return_value=None):
             res = self._chat("chat_as_student", "كم رسوم كلية الطب؟", "12345")
-        self.assertEqual(res["source"], "uploaded_files_all")
+        self.assertEqual(res["source"], "student_context_rag")
 
     def test_asking_about_another_student_is_refused(self):
         # third-person ranking question → blocked, never reaches profile or LLM
@@ -125,7 +169,8 @@ class TestStudentChat(ChatBase):
         # No account for this id → nothing to expose → falls through to content.
         with patch("app.auth.find_account", return_value=None):
             res = self._chat("chat_as_student", "ما معدلي؟", "99999")
-        self.assertEqual(res["source"], "uploaded_files_all")
+        self.assertEqual(res["source"], "student_context_rag")
+        self.assertNotIn("المعدل التراكمي:", self._system_of_last_call())
 
 
 class TestUploadedChatFlows(ChatBase):
