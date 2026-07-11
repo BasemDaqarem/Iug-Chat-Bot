@@ -17,6 +17,7 @@ from app.knowledge_base import KnowledgeBase
 from app.llm import chat_completion
 from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
 from app.sessions import SessionStore, make_session_store
+from app.text_norm import normalize_arabic
 from app.uploaded_files import UploadedFilesStore
 
 
@@ -137,6 +138,67 @@ class IUGChatbot:
         answer = chat_completion(system, user_message)
         self.push_history(session_id, question, answer)
         return answer
+
+    @staticmethod
+    def _is_generic_engineering_hourly_fee(question: str) -> bool:
+        """Whether a fee question names engineering but omits degree level.
+
+        These questions need evidence for both undergraduate and graduate
+        programmes; otherwise a single high-ranking chunk can make the model
+        present one level's price as if it applied to every programme.
+        """
+        normalized = normalize_arabic(question).lower()
+        asks_hourly_fee = (
+            "هندس" in normalized
+            and "ساع" in normalized
+            and any(term in normalized for term in ("سعر", "رسوم", "تكلف"))
+        )
+        names_level = any(
+            term in normalized
+            for term in (
+                "بكالوريوس",
+                "بكلوريوس",
+                "بكالوريس",
+                "ماجستير",
+                "دراسات عليا",
+                "دراسات العليا",
+                "دكتوراه",
+            )
+        )
+        return asks_hourly_fee and not names_level
+
+    def _search_all_for_question(self, question: str, top_k: int) -> List[str]:
+        """Retrieve uploaded-file evidence, expanding ambiguous fee queries.
+
+        Values remain fully data-driven: the expansion only asks the existing
+        uploaded-files index for each degree level, then interleaves and
+        deduplicates its results so both levels fit in the final context.
+        """
+        queries = [question]
+        if self._is_generic_engineering_hourly_fee(question):
+            queries.extend((
+                f"{question} بكالوريوس",
+                f"{question} ماجستير دراسات عليا",
+            ))
+
+        per_query_k = max(2, (top_k + len(queries) - 1) // len(queries))
+        batches = [self._uploaded.search_all(query, per_query_k) for query in queries]
+
+        merged: List[str] = []
+        seen = set()
+        max_batch_size = max((len(batch) for batch in batches), default=0)
+        for position in range(max_batch_size):
+            for batch in batches:
+                if position >= len(batch):
+                    continue
+                chunk = batch[position]
+                if chunk in seen:
+                    continue
+                seen.add(chunk)
+                merged.append(chunk)
+                if len(merged) >= top_k:
+                    return merged
+        return merged
 
     def chat(self, question: str, session_id: str) -> dict:
         """
@@ -287,9 +349,17 @@ class IUGChatbot:
                 self.push_history(session_id, question, cached["answer"])
                 return dict(cached)
 
-        relevant_chunks = self._uploaded.search_all(question, top_k)
+        generic_engineering_fee = self._is_generic_engineering_hourly_fee(question)
+        relevant_chunks = self._search_all_for_question(question, top_k)
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
+        if generic_engineering_fee:
+            system += """
+
+تعليمات خاصة بهذا السؤال: لم يحدد الطالب المرحلة الدراسية لسعر الساعة في
+الهندسة. اعرض بشكل منفصل سعر البكالوريوس وسعر الماجستير/الدراسات العليا إذا
+وُجدا في المقاطع أعلاه. لا تخلط بينهما، ولا تخترع قيمة لم ترد في المقاطع.
+"""
         answer  = self._ask_llm(system, question, session_id)
         result = {"answer": answer, "top_chunks": relevant_chunks, "source": "uploaded_files_all"}
         if cacheable:
