@@ -99,7 +99,10 @@ class ChatResponse(BaseModel):
     )
     source: str = Field(
         default="knowledge_base",
-        description="مصدر الإجابة: knowledge_base | uploaded_file | uploaded_files_all",
+        description=(
+            "مصدر الإجابة: knowledge_base | uploaded_file | uploaded_files_all | "
+            "structured_admission | student_profile | trusted_fact"
+        ),
     )
 
 
