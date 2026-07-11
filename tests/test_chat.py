@@ -136,6 +136,43 @@ class TestUploadedChatFlows(ChatBase):
         self.assertEqual(res["source"], "uploaded_files_all")
         self.assertTrue(res["top_chunks"])
 
+    def test_generic_engineering_hourly_fee_retrieves_both_levels(self):
+        searches = []
+
+        def fake_search(question, top_k):
+            searches.append(question)
+            if "بكالوريوس" in question:
+                return ["بكالوريوس الهندسة: سعر الساعة 30 دينار"]
+            if "ماجستير" in question:
+                return ["ماجستير الهندسة: سعر الساعة 70 دينار"]
+            return ["معلومات عامة عن كلية الهندسة"]
+
+        with patch.object(self.bot._uploaded, "search_all", side_effect=fake_search):
+            res = self._chat("chat_with_all_files", "كم سعر ساعة الهندسة؟", "fee-sess")
+
+        self.assertEqual(len(searches), 3)
+        self.assertTrue(any("بكالوريوس" in query for query in searches))
+        self.assertTrue(any("ماجستير" in query for query in searches))
+        self.assertEqual(len(res["top_chunks"]), 3)
+        system = self._system_of_last_call()
+        self.assertIn("30 دينار", system)
+        self.assertIn("70 دينار", system)
+        self.assertIn("اعرض بشكل منفصل", system)
+
+    def test_explicit_engineering_degree_does_not_expand_search(self):
+        with patch.object(
+            self.bot._uploaded,
+            "search_all",
+            return_value=["بكالوريوس الهندسة: سعر الساعة 30 دينار"],
+        ) as search:
+            self._chat(
+                "chat_with_all_files",
+                "كم سعر ساعة الهندسة للبكالوريوس؟",
+                "explicit-fee-sess",
+            )
+
+        search.assert_called_once()
+
     def test_chat_with_all_files_empty(self):
         self.bot._uploaded._chunks = {}
         self.bot._uploaded._indexes = {}
