@@ -19,24 +19,7 @@ class TestQuestionClassifiers(unittest.TestCase):
         self.assertTrue(privacy.is_academic_status_question("هل أنا في خطر؟"))
         self.assertFalse(privacy.is_academic_status_question("متى يبدأ الفصل؟"))
 
-    def test_wants_own_record(self):
-        for q in ("ما هي حالتي الأكاديمية؟", "كم معدلي؟", "ما ترتيبي على الدفعة؟", "ما تخصصي؟"):
-            self.assertTrue(privacy.wants_own_academic_record(q), q)
-        # public/other questions must NOT be treated as a personal-record query
-        for q in ("ما معدل القبول في الهندسة؟", "كم رسوم الطب؟", "ما معدل سالم؟"):
-            self.assertFalse(privacy.wants_own_academic_record(q), q)
-
-    def test_wants_own_profile_identity_and_summary(self):
-        for q in ("ما هو اسمي؟", "من أنا؟", "ما هي بياناتي المتوفرة؟"):
-            self.assertTrue(privacy.wants_own_profile(q), q)
-
-    def test_build_profile_identity_answer(self):
-        profile = {"name": "محمد", "data_source": "self_reported_demo"}
-        out = privacy.build_profile_answer("ما هو اسمي؟", profile)
-        self.assertIn("محمد", out)
-        self.assertIn("تجريبية", out)
-
-    def test_build_profile_summary(self):
+    def test_formats_only_approved_profile_fields_for_private_context(self):
         profile = {
             "name": "محمد",
             "major": "هندسة الحاسوب",
@@ -44,25 +27,14 @@ class TestQuestionClassifiers(unittest.TestCase):
             "rank": 3,
             "academic_status": "regular",
             "data_source": "self_reported_demo",
+            "password_hash": "must-never-appear",
         }
-        out = privacy.build_profile_answer("ما بياناتي المتوفرة؟", profile)
+        out = privacy.format_authenticated_profile_context(profile)
         for value in ("محمد", "هندسة الحاسوب", "88.5", "3", "منتظم"):
             self.assertIn(value, out)
         self.assertIn("ليست سجلاً رسمياً", out)
-
-    def test_build_status_from_profile(self):
-        out = privacy.build_status_from_profile(
-            {"name": "محمد", "major": "هندسة حاسوب", "gpa": 88.5, "rank": 3,
-             "academic_status": "regular"})
-        self.assertIn("88.5", out)
-        self.assertIn("3", out)
-        self.assertIn("هندسة حاسوب", out)
-        self.assertIn("منتظم", out)
-
-    def test_build_status_flags_at_risk(self):
-        out = privacy.build_status_from_profile({"gpa": 60, "rank": 200, "academic_status": "at_risk"})
-        self.assertIn("خطر", out)
-        self.assertIn("مرشدك", out)  # advice line for at-risk students
+        self.assertNotIn("password_hash", out)
+        self.assertNotIn("must-never-appear", out)
 
     def test_asks_about_other_student_third_person(self):
         for q in ("ما معدله؟", "كم ترتيبها على الدفعة؟", "ما معدل الطالب أحمد؟", "ترتيب زميلي"):
