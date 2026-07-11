@@ -2,38 +2,110 @@
 # رابط عام دائم يجرّبه أعضاء المشروع من المتصفح عبر /docs (بلا واجهة).
 # الأسرار (المفاتيح) تُضاف يدوياً في لوحة Render (sync: false) ولا تُرفع في git.
 
+# services:
+#   - type: web
+#     name: iug-chatbot-api
+#     runtime: python
+#     plan: free
+#     buildCommand: pip install -r requirements.txt
+#     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+#     healthCheckPath: /health
+#     envVars:
+#       # نُبقي /docs متاحة للفريق أثناء التجربة (production تُخفيها)
+#       - key: API_ENV
+#         value: development
+#       - key: PYTHON_VERSION
+#         value: 3.11.9
+#       - key: API_CORS_ORIGINS
+#         value: "*"
+#       # ── أسرار: عبّئها في لوحة Render (Environment) — لا تُكتب هنا ──
+#       - key: MONGO_URI
+#         sync: false
+#       - key: MONGO_DB_NAME
+#         sync: false
+#       - key: UPLOADED_DB_NAME
+#         sync: false
+#       - key: CHAT_API_URL
+#         sync: false
+#       - key: CHAT_API_KEY
+#         sync: false
+#       - key: CHAT_API_MODEL
+#         sync: false
+#       - key: EMBED_API_URL
+#         sync: false
+#       - key: EMBED_API_KEY
+#         sync: false
+#       - key: EMBED_MODEL
+#         sync: false
 services:
   - type: web
     name: iug-chatbot-api
     runtime: python
     plan: free
+    branch: main
+
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    autoDeployTrigger: commit
+
     envVars:
-      # نُبقي /docs متاحة للفريق أثناء التجربة (production تُخفيها)
       - key: API_ENV
-        value: development
+        value: production
+
       - key: PYTHON_VERSION
         value: 3.11.9
+
+      # الواجهة والخادم على نفس النطاق؛ لا نحتاج CORS خارجي
       - key: API_CORS_ORIGINS
-        value: "*"
-      # ── أسرار: عبّئها في لوحة Render (Environment) — لا تُكتب هنا ──
+        value: ""
+
+      - key: INDEX_BACKEND
+        value: mongo
+
+      - key: SESSION_BACKEND
+        value: mongo
+
+      - key: CACHE_ENABLED
+        value: "true"
+
+      - key: JWT_EXPIRE_HOURS
+        value: "12"
+
+      - key: LOG_LEVEL
+        value: INFO
+
+      # Render يولّد أسراراً عشوائية قوية
+      - key: JWT_SECRET
+        generateValue: true
+
+      - key: ADMIN_API_KEY
+        generateValue: true
+
+      # تُدخل هذه القيم في لوحة Render، ولا تضعها في GitHub
       - key: MONGO_URI
         sync: false
+
       - key: MONGO_DB_NAME
         sync: false
+
       - key: UPLOADED_DB_NAME
         sync: false
+
       - key: CHAT_API_URL
         sync: false
+
       - key: CHAT_API_KEY
         sync: false
+
       - key: CHAT_API_MODEL
         sync: false
+
       - key: EMBED_API_URL
         sync: false
+
       - key: EMBED_API_KEY
         sync: false
+
       - key: EMBED_MODEL
         sync: false
