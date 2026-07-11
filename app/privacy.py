@@ -10,6 +10,7 @@ import re
 from typing import List, Optional
 
 from app.chunking import flatten_json_to_text
+from app.text_norm import normalize_arabic
 
 ACADEMIC_STATUS_KEYWORDS = [
     "حالتي الاكاديمية", "حالتي الأكاديمية", "حالة اكاديمية", "حالة أكاديمية",
@@ -24,6 +25,10 @@ RANKING_KEYWORDS = ["معدل", "ترتيب", "gpa", "معدله", "ترتيبه
 OWN_RECORD_KEYWORDS = [
     "معدلي", "ترتيبي", "حالتي", "وضعي", "مستواي", "درجاتي", "تخصصي",
     "معدل تخرجي", "أنا في خطر", "انا في خطر", "أنا متعثر", "انا متعثر",
+]
+
+OWN_PROFILE_KEYWORDS = [
+    "اسمي", "من انا", "من أنا", "بياناتي", "معلوماتي",
 ]
 
 BLOCKED_ANSWER = "عذراً، بيانات الترتيب والمعدلات خاصة بكل طالب ولا يمكن الاطلاع عليها."
@@ -52,6 +57,15 @@ def wants_own_academic_record(question: str) -> bool:
     (status / gpa / rank), so we may answer from their own profile."""
     return is_academic_status_question(question) or any(
         k in question for k in OWN_RECORD_KEYWORDS
+    )
+
+
+def wants_own_profile(question: str) -> bool:
+    """True for any request that can be answered from the caller's profile."""
+    normalized = normalize_arabic(question).lower()
+    return wants_own_academic_record(question) or any(
+        normalize_arabic(keyword).lower() in normalized
+        for keyword in OWN_PROFILE_KEYWORDS
     )
 
 
@@ -95,7 +109,38 @@ def build_status_from_profile(profile: dict) -> str:
         lines.append(f"• الوضع: {_STATUS_LABELS.get(status, status)}")
         if status in ("at_risk", "probation"):
             lines.append("⚠️ يُنصح بمراجعة مرشدك الأكاديمي لوضع خطة لتحسين مستواك.")
+    if profile.get("data_source") == "self_reported_demo":
+        lines.append("ℹ️ هذه بيانات تجريبية أدخلتها عند إنشاء الحساب وليست سجلاً رسمياً من الجامعة.")
     return "\n".join(lines)
+
+
+def build_profile_answer(question: str, profile: dict) -> str:
+    """Build a deterministic answer from the authenticated student's profile."""
+    normalized = normalize_arabic(question).lower()
+    name = profile.get("name")
+
+    if ("اسمي" in normalized or "من انا" in normalized) and "بيانات" not in normalized:
+        answer = f"اسمك هو {name}." if name else "اسمك غير متوفر في الحساب حالياً."
+        if profile.get("data_source") == "self_reported_demo":
+            answer += " هذه معلومة تجريبية أدخلتها عند إنشاء الحساب."
+        return answer
+
+    if "بيانات" in normalized or "معلوماتي" in normalized:
+        status = profile.get("academic_status")
+        lines = ["📋 بياناتك المتوفرة في الحساب التجريبي:"]
+        for label, value in (
+            ("الاسم", name),
+            ("التخصص", profile.get("major")),
+            ("المعدل التراكمي", profile.get("gpa")),
+            ("الترتيب على الدفعة", profile.get("rank")),
+            ("الحالة الأكاديمية", _STATUS_LABELS.get(status, status) if status else None),
+        ):
+            if value not in (None, ""):
+                lines.append(f"• {label}: {value}")
+        lines.append("ℹ️ أدخلت هذه البيانات عند إنشاء الحساب وليست سجلاً رسمياً من الجامعة.")
+        return "\n".join(lines)
+
+    return build_status_from_profile(profile)
 
 
 def find_sensitive_record(chunk_meta: List[dict], session_id: str) -> Optional[dict]:

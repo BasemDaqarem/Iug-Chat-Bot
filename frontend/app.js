@@ -15,6 +15,10 @@
     opts:    document.querySelectorAll(".switch__opt"),
     form:    $("#authForm"),
     name:    $("#name"),
+    major:   $("#major"),
+    gpa:     $("#gpa"),
+    rank:    $("#rank"),
+    status:  $("#academic_status"),
     id:      $("#student_id"),
     pass:    $("#password"),
     eye:     $("#eye"),
@@ -22,9 +26,11 @@
     label:   $(".submit__label"),
     msg:     $("#formMsg"),
     foots:   document.querySelectorAll("[data-foot]"),
+    registerControls: document.querySelectorAll(".only-register input, .only-register select"),
   };
 
   let mode = "login"; // 'login' | 'register'
+  el.registerControls.forEach((control) => { control.disabled = true; });
 
   // Show a one-time message handed over from the chat page (e.g. expired token).
   try {
@@ -41,6 +47,8 @@
   function setMode(next) {
     if (next === mode) return;
     mode = next;
+    el.registerControls.forEach((control) => { control.disabled = mode !== "register"; });
+    el.card.classList.toggle("mode-register", mode === "register");
     el.switch.classList.toggle("is-register", mode === "register");
     el.opts.forEach((o) => o.classList.toggle("is-active", o.dataset.mode === mode));
     el.label.textContent = COPY[mode].btn;
@@ -63,6 +71,10 @@
     clearFieldError(el.id);
   });
   el.name.addEventListener("input", () => clearFieldError(el.name));
+  el.major.addEventListener("input", () => clearFieldError(el.major));
+  el.gpa.addEventListener("input", () => clearFieldError(el.gpa));
+  el.rank.addEventListener("input", () => clearFieldError(el.rank));
+  el.status.addEventListener("change", () => clearFieldError(el.status));
   el.pass.addEventListener("input", () => clearFieldError(el.pass));
 
   // Password show/hide.
@@ -89,13 +101,27 @@
     if (err) err.textContent = "";
   }
   function clearErrors() {
-    [el.name, el.id, el.pass].forEach(clearFieldError);
+    [el.name, el.major, el.gpa, el.rank, el.status, el.id, el.pass].forEach(clearFieldError);
   }
 
   function validate() {
     let ok = true;
     if (mode === "register" && el.name.value.trim().length < 2) {
       setFieldError(el.name, "أدخل اسمك (حرفان على الأقل)."); ok = false;
+    }
+    if (mode === "register" && el.major.value.trim().length < 2) {
+      setFieldError(el.major, "أدخل تخصصك."); ok = false;
+    }
+    const gpa = Number(el.gpa.value);
+    if (mode === "register" && (el.gpa.value === "" || !Number.isFinite(gpa) || gpa < 0 || gpa > 100)) {
+      setFieldError(el.gpa, "أدخل معدلاً صحيحاً بين 0 و100."); ok = false;
+    }
+    const rank = Number(el.rank.value);
+    if (mode === "register" && (el.rank.value === "" || !Number.isInteger(rank) || rank < 1)) {
+      setFieldError(el.rank, "أدخل ترتيباً صحيحاً يبدأ من 1."); ok = false;
+    }
+    if (mode === "register" && !el.status.value) {
+      setFieldError(el.status, "اختر حالتك الأكاديمية."); ok = false;
     }
     if (!/^\d{3,20}$/.test(el.id.value)) {
       setFieldError(el.id, "الرقم الجامعي أرقام فقط (3 خانات على الأقل)."); ok = false;
@@ -128,7 +154,13 @@
 
     const path = mode === "login" ? "/api/auth/login" : "/api/auth/register";
     const payload = { student_id: el.id.value, password: el.pass.value };
-    if (mode === "register") payload.name = el.name.value.trim();
+    if (mode === "register") {
+      payload.name = el.name.value.trim();
+      payload.major = el.major.value.trim();
+      payload.gpa = Number(el.gpa.value);
+      payload.rank = Number(el.rank.value);
+      payload.academic_status = el.status.value;
+    }
 
     try {
       const res = await postJSON(API + path, payload);
@@ -186,7 +218,15 @@
     const error = (data && data.error) || {};
     if (status === 422 && Array.isArray(error.details)) {
       error.details.forEach((d) => {
-        const input = { name: el.name, student_id: el.id, password: el.pass }[d.field];
+        const input = {
+          name: el.name,
+          major: el.major,
+          gpa: el.gpa,
+          rank: el.rank,
+          academic_status: el.status,
+          student_id: el.id,
+          password: el.pass,
+        }[d.field];
         if (input) setFieldError(input, d.message);
       });
       showMessage("تحقّق من الحقول المُعلّمة.", "err");

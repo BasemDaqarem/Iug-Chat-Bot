@@ -414,11 +414,11 @@ class IUGChatbot:
             self.push_history(student_id, question, privacy.BLOCKED_ANSWER)
             return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": [], "source": "privacy_block"}
 
-        if privacy.wants_own_academic_record(question):
+        if privacy.wants_own_profile(question):
             account = auth.find_account(student_id)
             profile = (account or {}).get("profile") or {}
             if profile:
-                answer = privacy.build_status_from_profile(profile)
+                answer = privacy.build_profile_answer(question, profile)
                 self.push_history(student_id, question, answer)
                 return {"answer": answer, "top_chunks": [], "source": "student_profile"}
 
