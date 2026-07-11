@@ -98,6 +98,14 @@ class TestStudentChat(ChatBase):
             res = self._chat("chat_as_student", "كم معدلي؟", "12345")
         self.assertEqual(res["source"], "student_profile")
 
+    def test_my_name_question_uses_profile_without_llm(self):
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}):
+            res = self._chat("chat_as_student", "ما هو اسمي؟", "12345")
+        self.assertEqual(self.llm_calls, [])
+        self.assertEqual(res["source"], "student_profile")
+        self.assertIn("محمد أحمد", res["answer"])
+
     def test_content_question_routes_to_files(self):
         with patch("app.auth.find_account", return_value=None):
             res = self._chat("chat_as_student", "كم رسوم كلية الطب؟", "12345")
