@@ -21,8 +21,16 @@ from app.text_norm import normalize_arabic, tokenize
 # ── 1. self-references → student profile ─────────────────────────────────────
 # First-person possessives whose referent lives in the student's profile.
 # Matched on NORMALIZED tokens (see text_norm: ة→ه, أ/إ→ا ...).
+#
+# The BARE definite forms «القسم»/«الكليه» count too: a logged-in student
+# saying «رئيس القسم» means HIS department (proven live — Basem's «كيف ممكن
+# اتواصل مع رئيس القسم؟» found nothing). A named faculty tokenizes WITHOUT
+# the article on the marker («قسم هندسة الحاسوب» → قسم, هندسه, …), so these
+# exact tokens never fire when another faculty is spelled out.
 _SELF_REF_TOKENS = {
     "قسمي", "تخصصي", "كليتي", "برنامجي", "دراستي", "مساقاتي", "موادي",
+    "قسمنا", "كليتنا",
+    "القسم", "الكليه",
 }
 
 
