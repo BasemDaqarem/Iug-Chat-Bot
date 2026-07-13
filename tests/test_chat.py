@@ -120,7 +120,7 @@ class TestStudentChat(ChatBase):
                           return_value=[scholarship_chunk]) as search:
             res = self._chat("chat_as_student", question, "12345")
 
-        search.assert_called_once_with(question, config.TOP_K)
+        search.assert_called_once_with(question, config.TOP_K, None)
         self.assertEqual(len(self.llm_calls), 1)
         self.assertEqual(res["source"], "student_context_rag")
         system = self._system_of_last_call()
@@ -129,6 +129,36 @@ class TestStudentChat(ChatBase):
         self.assertIn(question, self.llm_calls[-1]["messages"][1]["content"])
         self.assertEqual(res["top_chunks"], [scholarship_chunk])
         self.assertNotIn("محمد أحمد", "\n".join(res["top_chunks"]))
+
+    def test_my_department_question_expands_search_with_major(self):
+        """«رئيس قسمي» — the retrieval query must carry the student's major so
+        the right department's chunk can rank; the LLM question stays literal."""
+        question = "كيف اتواصل مع رئيس قسمي؟"
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question",
+                          return_value=[]) as search:
+            self._chat("chat_as_student", question, "12345")
+
+        searched = search.call_args[0][0]
+        self.assertIn("هندسة حاسوب", searched)
+        self.assertIn("رئيس قسمي", searched)
+        # the LLM still sees exactly what the student typed
+        self.assertIn(question, self.llm_calls[-1]["messages"][1]["content"])
+
+    def test_follow_up_question_searches_with_previous_topic(self):
+        """«كم هيكلفني رسوم هذا الطلب» after a deferral question — retrieval
+        must inherit the previous turn's topic, not guess a fresh one."""
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}):
+            self._chat("chat_as_student", "كيف بدي اجل الفصل الحالي؟", "12345")
+            with patch.object(self.bot, "_search_all_for_question",
+                              return_value=[]) as search:
+                self._chat("chat_as_student", "كم هيكلفني رسوم هذا الطلب؟", "12345")
+
+        searched = search.call_args[0][0]
+        self.assertIn("اجل الفصل", searched)          # inherited topic
+        self.assertIn("رسوم هذا الطلب", searched)     # current question
 
     def test_private_profile_answers_are_never_shared_through_cache(self):
         profiles = {
