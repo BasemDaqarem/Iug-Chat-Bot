@@ -6,9 +6,9 @@ so the OpenAPI docs (/docs) are always accurate and the frontend can generate
 typed clients directly from them.
 """
 
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Authentication
@@ -16,19 +16,39 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
-    student_id: str = Field(
-        ...,
+    student_id: Optional[str] = Field(
+        default=None,
         pattern=r"^\d{3,20}$",
         description="الرقم الجامعي (أرقام فقط).",
         examples=["12345"],
+    )
+    identifier: Optional[str] = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9._-]{3,40}$",
+        description="رقم المستخدم للموظف أو الأدمن.",
+        examples=["EMP-1001"],
     )
     password: str = Field(
         ..., min_length=4, max_length=128, description="كلمة المرور."
     )
 
+    @model_validator(mode="after")
+    def require_identifier(self):
+        if not (self.identifier or self.student_id):
+            raise ValueError("أدخل الرقم الجامعي أو رقم المستخدم.")
+        return self
+
 
 class RegisterRequest(LoginRequest):
+    identifier: None = None
+    student_id: str = Field(..., pattern=r"^\d{3,20}$")
     name: str = Field(..., min_length=2, max_length=80, description="اسم الطالب.")
+    major: str = Field(..., min_length=2, max_length=120, description="تخصص الطالب (بيانات تجريبية).")
+    gpa: float = Field(..., ge=0, le=100, description="المعدل التراكمي من 100 (بيانات تجريبية).")
+    rank: int = Field(..., ge=1, le=1_000_000, description="الترتيب على الدفعة (بيانات تجريبية).")
+    academic_status: Literal[
+        "regular", "excellent", "good", "at_risk", "probation", "graduated"
+    ] = Field(..., description="الحالة الأكاديمية التي يحددها الطالب لأغراض العرض.")
 
 
 class StudentProfile(BaseModel):
@@ -40,11 +60,19 @@ class StudentProfile(BaseModel):
     gpa: Optional[float] = None
     rank: Optional[int] = None
     academic_status: Optional[str] = None
+    department: Optional[str] = None
+    job_title: Optional[str] = None
+    salary: Optional[float] = None
+    data_source: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
     success: bool = True
     student_id: str
+    user_id: Optional[str] = None
+    role: Literal["student", "employee", "admin"] = "student"
+    must_change_password: bool = False
     profile: StudentProfile
     access_token: str = Field(description="توكن الجلسة (JWT) — يُرسل في ترويسة Authorization.")
     token_type: str = "bearer"
@@ -91,7 +119,10 @@ class ChatResponse(BaseModel):
     )
     source: str = Field(
         default="knowledge_base",
-        description="مصدر الإجابة: knowledge_base | uploaded_file | uploaded_files_all",
+        description=(
+            "مصدر الإجابة: knowledge_base | uploaded_file | uploaded_files_all | "
+            "structured_admission | student_context_rag | trusted_fact"
+        ),
     )
 
 
@@ -126,6 +157,54 @@ class UploadResponse(BaseModel):
     inserted: int = Field(description="عدد الوثائق المخزّنة.")
     collection: str = Field(description="اسم الملف الذي خُزّن تحته.")
     indexed: bool = Field(description="هل بُني فهرس البحث بنجاح بعد الرفع.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Admin / employee portal
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class EmployeeCreateRequest(BaseModel):
+    employee_id: str = Field(..., pattern=r"^[A-Za-z0-9._-]{3,40}$")
+    temporary_password: str = Field(..., min_length=8, max_length=128)
+    name: str = Field(..., min_length=2, max_length=100)
+    department: str = Field(..., min_length=2, max_length=120)
+    job_title: str = Field(..., min_length=2, max_length=120)
+    salary: Optional[float] = Field(default=None, ge=0)
+    access_groups: List[str] = Field(default_factory=list, max_length=50)
+
+
+class EmployeeUpdateRequest(BaseModel):
+    active: Optional[bool] = None
+    name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    department: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    job_title: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    salary: Optional[float] = Field(default=None, ge=0)
+    access_groups: Optional[List[str]] = None
+    temporary_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    end_sessions: bool = False
+
+
+class ManagedFileCreateRequest(BaseModel):
+    collection: str = Field(..., pattern=r"^[^.$/\\]{2,100}$")
+    documents: Union[List[dict], dict]
+    classification: Literal[
+        "university_public", "student_records", "employee_internal",
+        "employee_private", "admin_only",
+    ] = "university_public"
+    allowed_roles: List[Literal["guest", "student", "employee", "admin"]] = Field(
+        default_factory=lambda: ["guest", "student", "employee", "admin"]
+    )
+    owner_id: Optional[str] = Field(default=None, max_length=40)
+
+
+class FileAccessUpdateRequest(BaseModel):
+    classification: Literal[
+        "university_public", "student_records", "employee_internal",
+        "employee_private", "admin_only",
+    ]
+    allowed_roles: List[Literal["guest", "student", "employee", "admin"]]
+    owner_id: Optional[str] = Field(default=None, max_length=40)
 
 
 # ═════════════════════════════════════════════════════════════════════════
