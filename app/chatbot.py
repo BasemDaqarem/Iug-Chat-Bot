@@ -436,9 +436,10 @@ class IUGChatbot:
                 return dict(cached)
 
         # Retrieval sees a context-aware query (follow-ups inherit the previous
-        # turn's topic); the LLM still receives the literal question.
-        search_question = query_rewrite.with_history_context(
-            retrieval_question or question, history
+        # turn's topic, colloquial verbs gain their canonical data nouns);
+        # the LLM still receives the literal question.
+        search_question = query_rewrite.add_canonical_terms(
+            query_rewrite.with_history_context(retrieval_question or question, history)
         )
 
         generic_engineering_fee = self._is_generic_engineering_hourly_fee(search_question)
