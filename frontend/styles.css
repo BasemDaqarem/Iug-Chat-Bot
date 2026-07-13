@@ -208,6 +208,22 @@ body {
   border-radius:10px;
   background:rgba(212,175,55,.05);
 }
+/* في وضع الدخول يجب أن يختفي الإشعار تماماً:
+   (١) أنيميشن .reveal تنتهي بـ forwards فتثبّت opacity:1 وتغلب إخفاء
+       .only-register — نعطّلها (العنصر مخفي عند التحميل أصلاً).
+   (٢) padding/border لا يطويهما max-height:0 فيبقى شريط مقصوص 18px —
+       نصفّرهما في الوضع المطوي ونعيدهما عند التسجيل. */
+.only-register.reveal { animation:none; }
+.demo-note.only-register {
+  padding-top:0; padding-bottom:0; border-width:0;
+  transition:max-height .5s var(--ease), opacity .4s var(--ease),
+             transform .4s var(--ease), padding .4s var(--ease),
+             border-width .4s var(--ease);
+}
+.switch.is-register ~ .form .demo-note.only-register,
+.mode-register .demo-note.only-register {
+  padding:8px 10px; border-width:1px;
+}
 .register-grid {
   display:grid;
   grid-template-columns:1fr 1fr;
