@@ -16,10 +16,10 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app import config
+from app import auth as auth_service, config
 from app.api import middleware
 from app.api.errors import setup_error_handlers
-from app.api.routers import auth, cache, chat, files, health, sessions
+from app.api.routers import admin, auth, cache, chat, files, health, portal, sessions
 from app.chatbot import IUGChatbot
 from app.log import get_logger
 
@@ -44,12 +44,13 @@ class _NoCacheStatic(StaticFiles):
 _DESCRIPTION = """
 واجهة برمجية لشات بوت الجامعة الإسلامية بغزة.
 
-- **Chat**: محادثة RAG (قاعدة المعرفة أو الملفات المرفوعة) مع سجل جلسات.
+- **Chat**: محادثة RAG مفلترة حسب دور الزائر/الطالب/الموظف/الأدمن.
 - **Uploaded Files**: رفع ملفات JSON وإدارة فهارسها.
+- **Admin**: إدارة الموظفين ودورة مسودة/معالجة/نشر الملفات وسجل التدقيق.
 - **Sessions**: قراءة/مسح سجل المحادثة.
 - **Health**: جاهزية الخدمة وإحصاءاتها.
 
-المصادقة تُضاف لاحقاً كطبقة مستقلة — حالياً `session_id` يحدد هوية الجلسة.
+الهوية والدور يؤخذان من JWT الموقّع ولا يقبلان من جسم الطلب.
 """
 
 
@@ -64,6 +65,11 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
             instance = IUGChatbot()
             instance.initialize()        # Mongo + cached embedding indexes
             app.state.bot = instance
+            auth_service.ensure_bootstrap_admin(
+                config.ADMIN_BOOTSTRAP_ID,
+                config.ADMIN_BOOTSTRAP_PASSWORD,
+                config.ADMIN_BOOTSTRAP_NAME,
+            )
         log.info("🚀 IUG Chatbot API جاهزة.")
         yield
 
@@ -76,6 +82,9 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
         docs_url="/docs" if config.API_ENV != "production" else None,
         redoc_url="/redoc" if config.API_ENV != "production" else None,
     )
+    # Real deployments re-check account state/version on every protected
+    # request. Injected bots are isolated test doubles and have no Mongo.
+    app.state.verify_account_tokens = bot is None
 
     middleware.setup(app)
     setup_error_handlers(app)
@@ -86,6 +95,8 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
     app.include_router(files.router, prefix="/api")
     app.include_router(sessions.router, prefix="/api")
     app.include_router(cache.router, prefix="/api")
+    app.include_router(admin.router, prefix="/api")
+    app.include_router(portal.router, prefix="/api")
 
     # Premium auth UI (static, offline) — served at /app/ (mounted last so it
     # never shadows the /api and /health routes above). No-cache so a frontend

@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot, get_current_student, require_admin
+from app import file_catalog
+from app.api.deps import get_bot, get_current_principal, require_admin
 from app.api.errors import BadRequestError, NotFoundError, UpstreamError
 from app.api.schemas import (
     ErrorResponse,
@@ -35,10 +36,19 @@ def _file_names(bot: IUGChatbot) -> set:
     response_model=FilesListResponse,
     summary="قائمة الملفات المرفوعة",
     description="كل ملف مع عدد مقاطعه وهل فهرس البحث الدلالي جاهز له.",
-    dependencies=[Depends(get_current_student)],
+    dependencies=[Depends(get_current_principal)],
 )
-def list_files(bot: IUGChatbot = Depends(get_bot)) -> FilesListResponse:
-    files = [FileInfo(**f) for f in bot.get_uploaded_files_list()]
+def list_files(
+    principal=Depends(get_current_principal),
+    bot: IUGChatbot = Depends(get_bot),
+) -> FilesListResponse:
+    runtime = bot.get_uploaded_files_list()
+    if isinstance(bot, IUGChatbot):
+        allowed = file_catalog.allowed_collections(
+            principal, {item["collection"] for item in runtime}
+        )
+        runtime = [item for item in runtime if item["collection"] in allowed]
+    files = [FileInfo(**f) for f in runtime]
     return FilesListResponse(files=files, count=len(files))
 
 

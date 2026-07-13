@@ -15,16 +15,24 @@
     opts:    document.querySelectorAll(".switch__opt"),
     form:    $("#authForm"),
     name:    $("#name"),
+    major:   $("#major"),
+    gpa:     $("#gpa"),
+    rank:    $("#rank"),
+    status:  $("#academic_status"),
     id:      $("#student_id"),
+    idLabel: $("#identifierLabel"),
     pass:    $("#password"),
     eye:     $("#eye"),
     submit:  $("#submit"),
     label:   $(".submit__label"),
     msg:     $("#formMsg"),
     foots:   document.querySelectorAll("[data-foot]"),
+    registerControls: document.querySelectorAll(".only-register input, .only-register select"),
+    guest:   $("#guestEntry"),
   };
 
   let mode = "login"; // 'login' | 'register'
+  el.registerControls.forEach((control) => { control.disabled = true; });
 
   // Show a one-time message handed over from the chat page (e.g. expired token).
   try {
@@ -41,10 +49,14 @@
   function setMode(next) {
     if (next === mode) return;
     mode = next;
+    el.registerControls.forEach((control) => { control.disabled = mode !== "register"; });
+    el.card.classList.toggle("mode-register", mode === "register");
     el.switch.classList.toggle("is-register", mode === "register");
     el.opts.forEach((o) => o.classList.toggle("is-active", o.dataset.mode === mode));
     el.label.textContent = COPY[mode].btn;
     el.pass.setAttribute("autocomplete", COPY[mode].pass);
+    el.idLabel.textContent = mode === "register" ? "الرقم الجامعي" : "الرقم الجامعي أو الوظيفي";
+    el.id.placeholder = mode === "register" ? "مثال: 120210001" : "مثال: 120210001 أو EMP-1001";
     el.foots.forEach((f) => (f.hidden = f.dataset.foot !== mode));
     clearMessage();
     clearErrors();
@@ -56,13 +68,19 @@
   );
 
   // ---------- input polish ----------
-  // Student ID: digits only.
+  // Student registration stays numeric; employee/admin login accepts IDs.
   el.id.addEventListener("input", () => {
-    const clean = el.id.value.replace(/\D+/g, "");
-    if (clean !== el.id.value) el.id.value = clean;
+    if (mode === "register") {
+      const clean = el.id.value.replace(/\D+/g, "");
+      if (clean !== el.id.value) el.id.value = clean;
+    }
     clearFieldError(el.id);
   });
   el.name.addEventListener("input", () => clearFieldError(el.name));
+  el.major.addEventListener("input", () => clearFieldError(el.major));
+  el.gpa.addEventListener("input", () => clearFieldError(el.gpa));
+  el.rank.addEventListener("input", () => clearFieldError(el.rank));
+  el.status.addEventListener("change", () => clearFieldError(el.status));
   el.pass.addEventListener("input", () => clearFieldError(el.pass));
 
   // Password show/hide.
@@ -89,7 +107,7 @@
     if (err) err.textContent = "";
   }
   function clearErrors() {
-    [el.name, el.id, el.pass].forEach(clearFieldError);
+    [el.name, el.major, el.gpa, el.rank, el.status, el.id, el.pass].forEach(clearFieldError);
   }
 
   function validate() {
@@ -97,8 +115,28 @@
     if (mode === "register" && el.name.value.trim().length < 2) {
       setFieldError(el.name, "أدخل اسمك (حرفان على الأقل)."); ok = false;
     }
-    if (!/^\d{3,20}$/.test(el.id.value)) {
-      setFieldError(el.id, "الرقم الجامعي أرقام فقط (3 خانات على الأقل)."); ok = false;
+    if (mode === "register" && el.major.value.trim().length < 2) {
+      setFieldError(el.major, "أدخل تخصصك."); ok = false;
+    }
+    const gpa = Number(el.gpa.value);
+    if (mode === "register" && (el.gpa.value === "" || !Number.isFinite(gpa) || gpa < 0 || gpa > 100)) {
+      setFieldError(el.gpa, "أدخل معدلاً صحيحاً بين 0 و100."); ok = false;
+    }
+    const rank = Number(el.rank.value);
+    if (mode === "register" && (el.rank.value === "" || !Number.isInteger(rank) || rank < 1)) {
+      setFieldError(el.rank, "أدخل ترتيباً صحيحاً يبدأ من 1."); ok = false;
+    }
+    if (mode === "register" && !el.status.value) {
+      setFieldError(el.status, "اختر حالتك الأكاديمية."); ok = false;
+    }
+    const validId = mode === "register"
+      ? /^\d{3,20}$/.test(el.id.value)
+      : /^[A-Za-z0-9._-]{3,40}$/.test(el.id.value);
+    if (!validId) {
+      setFieldError(el.id, mode === "register"
+        ? "الرقم الجامعي أرقام فقط (3 خانات على الأقل)."
+        : "أدخل رقماً جامعياً أو وظيفياً صحيحاً.");
+      ok = false;
     }
     if (el.pass.value.length < 4) {
       setFieldError(el.pass, "كلمة المرور 4 أحرف على الأقل."); ok = false;
@@ -127,8 +165,16 @@
     el.submit.disabled = true;
 
     const path = mode === "login" ? "/api/auth/login" : "/api/auth/register";
-    const payload = { student_id: el.id.value, password: el.pass.value };
-    if (mode === "register") payload.name = el.name.value.trim();
+    const payload = { password: el.pass.value };
+    if (mode === "register" || /^\d+$/.test(el.id.value)) payload.student_id = el.id.value;
+    else payload.identifier = el.id.value;
+    if (mode === "register") {
+      payload.name = el.name.value.trim();
+      payload.major = el.major.value.trim();
+      payload.gpa = Number(el.gpa.value);
+      payload.rank = Number(el.rank.value);
+      payload.academic_status = el.status.value;
+    }
 
     try {
       const res = await postJSON(API + path, payload);
@@ -159,6 +205,9 @@
     try {
       sessionStorage.setItem("iug_auth", JSON.stringify({
         student_id: (data && data.student_id) || el.id.value,
+        user_id: (data && data.user_id) || (data && data.student_id) || el.id.value,
+        role: (data && data.role) || "student",
+        must_change_password: Boolean(data && data.must_change_password),
         name: name,
         profile: (data && data.profile) || {},
         token: (data && data.access_token) || "",
@@ -177,7 +226,9 @@
     el.submit.classList.add("is-done");
     const greet = mode === "login" ? "مرحباً بعودتك" : "تم إنشاء حسابك";
     showMessage(name ? `${greet}، ${name} — جارٍ التحويل…` : "جارٍ التحويل…", "ok");
-    setTimeout(() => { window.location.href = "chat.html"; }, 900);
+    const role = (data && data.role) || "student";
+    const destination = role === "admin" ? "admin.html" : role === "employee" ? "employee.html" : "chat.html";
+    setTimeout(() => { window.location.href = destination; }, 900);
   }
 
   function onFailure(status, data) {
@@ -186,7 +237,15 @@
     const error = (data && data.error) || {};
     if (status === 422 && Array.isArray(error.details)) {
       error.details.forEach((d) => {
-        const input = { name: el.name, student_id: el.id, password: el.pass }[d.field];
+        const input = {
+          name: el.name,
+          major: el.major,
+          gpa: el.gpa,
+          rank: el.rank,
+          academic_status: el.status,
+          student_id: el.id,
+          password: el.pass,
+        }[d.field];
         if (input) setFieldError(input, d.message);
       });
       showMessage("تحقّق من الحقول المُعلّمة.", "err");
@@ -222,4 +281,10 @@
   }
 
   el.form.addEventListener("submit", onSubmit);
+  el.guest.addEventListener("click", () => {
+    sessionStorage.setItem("iug_auth", JSON.stringify({
+      user_id: "guest", student_id: "guest", name: "زائر", role: "guest", token: "",
+    }));
+    window.location.href = "chat.html";
+  });
 })();

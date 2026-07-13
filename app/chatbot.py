@@ -17,7 +17,10 @@ from app.knowledge_base import KnowledgeBase
 from app.llm import chat_completion
 from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
 from app.sessions import SessionStore, make_session_store
+from app.text_norm import normalize_arabic
 from app.uploaded_files import UploadedFilesStore
+from app.context_builder import build_private_context
+from app.rbac import Principal, Role, prompt_for
 
 
 class IUGChatbot:
@@ -137,6 +140,104 @@ class IUGChatbot:
         answer = chat_completion(system, user_message)
         self.push_history(session_id, question, answer)
         return answer
+
+    @staticmethod
+    def _is_generic_engineering_hourly_fee(question: str) -> bool:
+        """Whether a fee question names engineering but omits degree level.
+
+        These questions need evidence for both undergraduate and graduate
+        programmes; otherwise a single high-ranking chunk can make the model
+        present one level's price as if it applied to every programme.
+        """
+        normalized = normalize_arabic(question).lower()
+        asks_hourly_fee = (
+            "هندس" in normalized
+            and "ساع" in normalized
+            and any(term in normalized for term in ("سعر", "رسوم", "تكلف"))
+        )
+        names_level = any(
+            term in normalized
+            for term in (
+                "بكالوريوس",
+                "بكلوريوس",
+                "بكالوريس",
+                "ماجستير",
+                "دراسات عليا",
+                "دراسات العليا",
+                "دكتوراه",
+            )
+        )
+        return asks_hourly_fee and not names_level
+
+    @staticmethod
+    def _trusted_direct_answer(question: str) -> str:
+        """Return canonical answers for a tiny set of verified core facts.
+
+        These are intentionally deterministic because confusing Ramallah with
+        Palestine's capital, or failing to provide IUG's own official URL,
+        would make the student assistant confidently misleading.
+        """
+        normalized = normalize_arabic(question).lower()
+        if "عاصم" in normalized and "فلسطين" in normalized:
+            return "عاصمة فلسطين هي القدس."
+        if (
+            any(term in normalized for term in ("رابط", "موقع"))
+            and "جامع" in normalized
+            and any(term in normalized for term in ("اسلام", "غزه", "الجامعه"))
+        ):
+            return (
+                "رابط الموقع الرسمي للجامعة الإسلامية بغزة هو: "
+                "https://www.iugaza.edu.ps/"
+            )
+        return ""
+
+    def _search_all_for_question(
+        self,
+        question: str,
+        top_k: int,
+        allowed_collections: set[str] | None = None,
+    ) -> List[str]:
+        """Retrieve uploaded-file evidence, expanding ambiguous fee queries.
+
+        Values remain fully data-driven: the expansion only asks the existing
+        uploaded-files index for each degree level, then interleaves and
+        deduplicates its results so both levels fit in the final context.
+        """
+        queries = [question]
+        if self._is_generic_engineering_hourly_fee(question):
+            queries.extend((
+                f"{question} بكالوريوس",
+                f"{question} ماجستير دراسات عليا",
+            ))
+
+        per_query_k = max(2, (top_k + len(queries) - 1) // len(queries))
+        if allowed_collections is None:
+            batches = [self._uploaded.search_all(query, per_query_k) for query in queries]
+        else:
+            batches = [
+                self._uploaded.search_all(
+                    query,
+                    per_query_k,
+                    allowed_collections=allowed_collections,
+                )
+                for query in queries
+            ]
+
+        merged: List[str] = []
+        seen = set()
+        max_batch_size = max((len(batch) for batch in batches), default=0)
+        for position in range(max_batch_size):
+            for batch in batches:
+                if position >= len(batch):
+                    continue
+                chunk = batch[position]
+                if chunk in seen:
+                    continue
+                seen.add(chunk)
+                merged.append(chunk)
+                if len(merged) >= top_k:
+                    return merged
+        return merged
 
     def chat(self, question: str, session_id: str) -> dict:
         """
@@ -266,32 +367,83 @@ class IUGChatbot:
         question: str,
         session_id: str,
         top_k: int = config.TOP_K,
+        *,
+        private_context: str | None = None,
+        allowed_collections: set[str] | None = None,
+        role_prompt: str | None = None,
     ) -> dict:
         """
         Same idea as chat_with_file(), but searches across ALL currently
         uploaded files merged into a single global ranking — the LLM only
         ever sees the best top-K chunks overall.
         """
-        if self._uploaded.is_empty():
+        trusted_answer = self._trusted_direct_answer(question)
+        if trusted_answer:
+            self.push_history(session_id, question, trusted_answer)
             return {
-                "answer":     "لا توجد ملفات مرفوعة حالياً.",
+                "answer": trusted_answer,
                 "top_chunks": [],
-                "source":     "uploaded_files_all",
+                "source": "trusted_fact",
             }
 
-        cacheable = config.CACHE_ENABLED and not self.get_history(session_id)
-        cache_key = self._cache_key("all_files", question) if cacheable else None
+        admission = self._uploaded.resolve_admission(question, allowed_collections)
+        if admission is not None:
+            self.push_history(session_id, question, admission.answer)
+            return {
+                "answer": admission.answer,
+                "top_chunks": admission.top_chunks,
+                "source": "structured_admission",
+            }
+
+        # A student-specific prompt must never read from or write to the
+        # answer cache shared by public users.
+        cacheable = (
+            config.CACHE_ENABLED
+            and private_context is None
+            and not self.get_history(session_id)
+        )
+        access_key = "*" if allowed_collections is None else ",".join(sorted(allowed_collections))
+        cache_key = self._cache_key("all_files", question, access_key) if cacheable else None
         if cacheable:
             cached = self._answer_cache.get(cache_key)
             if cached is not None:
                 self.push_history(session_id, question, cached["answer"])
                 return dict(cached)
 
-        relevant_chunks = self._uploaded.search_all(question, top_k)
+        generic_engineering_fee = self._is_generic_engineering_hourly_fee(question)
+        if self._uploaded.is_empty():
+            relevant_chunks = []
+        elif allowed_collections is None:
+            relevant_chunks = self._search_all_for_question(question, top_k)
+        else:
+            relevant_chunks = self._search_all_for_question(
+                question, top_k, allowed_collections
+            )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
+        if role_prompt:
+            system += "\n\nسياسة الصلاحية الملزمة:\n" + role_prompt
+        if private_context is not None:
+            system += f"""
+
+{private_context}
+
+تعليمات السياق الخاص:
+- افهم سؤال الطالب كاملاً؛ لا تتوقف عند كلمة مثل «معدلي» أو «ترتيبي».
+- استخدم بيانات الطالب فقط عندما تكون مرتبطة بالسؤال، ولا تسرد الملف كاملاً إلا إذا طلبه.
+- إذا جمع السؤال بين بياناته وموضوع جامعي كالمنح، فادمج بياناته مع المقاطع العامة المسترجعة للإجابة عن المقصود.
+- لا تذكر أو تستنتج بيانات طالب آخر.
+"""
+        if generic_engineering_fee:
+            system += """
+
+تعليمات خاصة بهذا السؤال: لم يحدد الطالب المرحلة الدراسية لسعر الساعة في
+الهندسة. اعرض بشكل منفصل سعر البكالوريوس وسعر الماجستير/الدراسات العليا إذا
+وُجدا في المقاطع أعلاه. لا تخلط بينهما، ولا تخترع قيمة لم ترد في المقاطع.
+"""
         answer  = self._ask_llm(system, question, session_id)
-        result = {"answer": answer, "top_chunks": relevant_chunks, "source": "uploaded_files_all"}
+        source = "student_context_rag" if private_context is not None else "uploaded_files_all"
+        result = {"answer": answer, "top_chunks": relevant_chunks, "source": source}
         if cacheable:
             self._answer_cache.set(
                 cache_key,
@@ -301,11 +453,10 @@ class IUGChatbot:
 
     def chat_as_student(self, question: str, student_id: str) -> dict:
         """
-        Chat for an authenticated student. If they ask about THEIR OWN record
-        (status / gpa / rank), answer directly from their profile — looked up
-        server-side by student_id, so a student only ever sees their own data,
-        and the profile never rides the shared answer cache. Any other question
-        goes to the normal university-content search.
+        Chat for an authenticated student. Their approved profile fields are
+        fetched server-side and supplied as private LLM context alongside the
+        public university retrieval. There is no keyword shortcut, so compound
+        questions are processed in full.
 
         SECURITY: callers pass the student_id extracted from the verified JWT
         (see app.api.deps.get_current_student), never a raw client field — so
@@ -316,13 +467,45 @@ class IUGChatbot:
             self.push_history(student_id, question, privacy.BLOCKED_ANSWER)
             return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": [], "source": "privacy_block"}
 
-        if privacy.wants_own_academic_record(question):
-            account = auth.find_account(student_id)
-            profile = (account or {}).get("profile") or {}
-            if profile:
-                answer = privacy.build_status_from_profile(profile)
-                self.push_history(student_id, question, answer)
-                return {"answer": answer, "top_chunks": [], "source": "student_profile"}
+        account = auth.find_account(student_id)
+        profile = (account or {}).get("profile") or {}
+        private_context = (
+            privacy.format_authenticated_profile_context(profile)
+            if profile
+            else ""
+        )
+        return self.chat_with_all_files(
+            question,
+            student_id,
+            private_context=private_context,
+            role_prompt=prompt_for(Principal(student_id, Role.STUDENT)),
+        )
 
-        # Not a personal-record question (or no profile) → university content.
-        return self.chat_with_all_files(question, student_id)
+    def chat_as_principal(
+        self,
+        question: str,
+        principal: Principal,
+        *,
+        allowed_collections: set[str],
+    ) -> dict:
+        """Unified role-aware chat path used by the new API endpoints."""
+        if principal.role == Role.STUDENT and privacy.asks_about_other_student(
+            question, principal.subject
+        ):
+            self.push_history(principal.subject, question, privacy.BLOCKED_ANSWER)
+            return {
+                "answer": privacy.BLOCKED_ANSWER,
+                "top_chunks": [],
+                "source": "privacy_block",
+            }
+
+        private_context = None
+        if principal.role != Role.GUEST:
+            private_context = build_private_context(principal, question)
+        return self.chat_with_all_files(
+            question,
+            principal.subject,
+            private_context=private_context,
+            allowed_collections=allowed_collections,
+            role_prompt=prompt_for(principal),
+        )

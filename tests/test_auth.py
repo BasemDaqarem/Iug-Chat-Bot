@@ -78,6 +78,20 @@ class AuthApiBase(unittest.TestCase):
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 
+    @staticmethod
+    def registration(**overrides):
+        payload = {
+            "student_id": "67890",
+            "password": "pin1234",
+            "name": "سالم",
+            "major": "هندسة الحاسوب",
+            "gpa": 83.5,
+            "rank": 12,
+            "academic_status": "regular",
+        }
+        payload.update(overrides)
+        return payload
+
 
 class TestLogin(AuthApiBase):
 
@@ -136,27 +150,55 @@ class TestLoginRateLimit(AuthApiBase):
 class TestRegister(AuthApiBase):
 
     def test_register_creates_and_hashes(self):
-        r = self.client.post("/api/auth/register",
-                             json={"student_id": "67890", "password": "pin1234", "name": "سالم"})
+        r = self.client.post("/api/auth/register", json=self.registration())
         self.assertEqual(r.status_code, 201)
         self.assertEqual(r.json()["student_id"], "67890")
+        self.assertEqual(r.json()["profile"]["gpa"], 83.5)
+        self.assertEqual(r.json()["profile"]["rank"], 12)
         # stored with a bcrypt hash, never plaintext
         stored = self.col.find_one({"student_id": "67890"})
         self.assertTrue(stored["password_hash"].startswith("$2"))
         self.assertNotIn("pin1234", stored["password_hash"])
+        self.assertEqual(stored["profile"]["major"], "هندسة الحاسوب")
+        self.assertEqual(stored["profile"]["data_source"], "self_reported_demo")
+        self.assertIn("updated_at", stored["profile"])
 
     def test_duplicate_id_is_409(self):
-        r = self.client.post("/api/auth/register",
-                             json={"student_id": "12345", "password": "pin1234", "name": "أحد"})
+        r = self.client.post(
+            "/api/auth/register",
+            json=self.registration(student_id="12345", name="أحد"),
+        )
         self.assertEqual(r.status_code, 409)
         self.assertEqual(r.json()["error"]["code"], "CONFLICT")
 
     def test_registered_user_can_login(self):
-        self.client.post("/api/auth/register",
-                        json={"student_id": "55555", "password": "mypass", "name": "خالد"})
+        self.client.post(
+            "/api/auth/register",
+            json=self.registration(student_id="55555", password="mypass", name="خالد"),
+        )
         r = self.client.post("/api/auth/login", json={"student_id": "55555", "password": "mypass"})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["profile"]["name"], "خالد")
+        self.assertEqual(r.json()["profile"]["academic_status"], "regular")
+
+    def test_registration_requires_demo_academic_profile(self):
+        r = self.client.post(
+            "/api/auth/register",
+            json={"student_id": "67890", "password": "pin1234", "name": "سالم"},
+        )
+        self.assertEqual(r.status_code, 422)
+        fields = {detail["field"] for detail in r.json()["error"]["details"]}
+        self.assertTrue({"major", "gpa", "rank", "academic_status"}.issubset(fields))
+
+    def test_registration_rejects_invalid_gpa_and_status(self):
+        r = self.client.post(
+            "/api/auth/register",
+            json=self.registration(gpa=120, academic_status="unknown"),
+        )
+        self.assertEqual(r.status_code, 422)
+        fields = {detail["field"] for detail in r.json()["error"]["details"]}
+        self.assertIn("gpa", fields)
+        self.assertIn("academic_status", fields)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ from typing import List, Optional
 import numpy as np
 
 from app import config, index_store
-from app.chunking import build_uploaded_chunks
+from app.admissions import AdmissionCatalog, AdmissionResolution
+from app.chunking import build_uploaded_chunks_with_doc_indexes
 from app.db import (
     drop_uploaded_collection,
     get_uploaded_collection,
@@ -30,6 +31,8 @@ class UploadedFilesStore:
         self._chunks: dict = {}   # {collection_name: [chunk_text, ...]}
         self._indexes: dict = {}  # {collection_name: np.ndarray}
         self._bm25: dict = {}     # {collection_name: (BM25, chunks_ref)} — lazy
+        self._chunk_doc_indexes: dict = {}  # {collection_name: [raw_doc_index, ...]}
+        self._admissions = AdmissionCatalog()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -40,12 +43,34 @@ class UploadedFilesStore:
                 log.info("ℹ️  No uploaded files found in MongoDB.")
                 return
             for col_name in collections:
-                self.load_one(col_name)
+                self.load_one(col_name, rebuild_admissions=False)
+            self._rebuild_admissions()
             log.info("✅ Loaded %d uploaded file(s).", len(self._chunks))
         except Exception as exc:
             log.warning("⚠️  Could not load uploaded files: %s", exc)
 
-    def load_one(self, collection_name: str):
+    def _rebuild_admissions(self) -> None:
+        def vector_for_fact(fact):
+            index = self._usable_index(fact.source)
+            doc_indexes = self._chunk_doc_indexes.get(fact.source, [])
+            if index is None:
+                return None
+            try:
+                chunk_index = doc_indexes.index(fact.doc_index)
+            except ValueError:
+                return None
+            return index[chunk_index]
+
+        try:
+            self._admissions.rebuild(vector_for_fact)
+            log.info(
+                "✅ Built structured admission catalog (%d facts).",
+                len(self._admissions.facts),
+            )
+        except Exception as exc:
+            log.warning("⚠️  Could not build structured admission catalog: %s", exc)
+
+    def load_one(self, collection_name: str, rebuild_admissions: bool = True):
         """
         Load one uploaded file's documents, build its chunks, AND build a
         dedicated embeddings index for it, so search_one() can run semantic
@@ -57,13 +82,26 @@ class UploadedFilesStore:
             self._chunks.pop(collection_name, None)
             self._indexes.pop(collection_name, None)
             self._bm25.pop(collection_name, None)
+            self._chunk_doc_indexes.pop(collection_name, None)
+            self._admissions.remove_collection(collection_name, rebuild=False)
+            if rebuild_admissions:
+                self._rebuild_admissions()
             return
 
-        chunks = build_uploaded_chunks(docs, collection_name)
+        self._admissions.replace_collection(collection_name, docs, rebuild=False)
+
+        chunks, doc_indexes = build_uploaded_chunks_with_doc_indexes(docs, collection_name)
         if not chunks:
+            self._chunks.pop(collection_name, None)
+            self._indexes.pop(collection_name, None)
+            self._bm25.pop(collection_name, None)
+            self._chunk_doc_indexes.pop(collection_name, None)
+            if rebuild_admissions:
+                self._rebuild_admissions()
             return
 
         self._chunks[collection_name] = chunks
+        self._chunk_doc_indexes[collection_name] = doc_indexes
         try:
             self._indexes[collection_name] = index_store.build_or_load(
                 f"uploaded::{collection_name}", chunks, build_index
@@ -74,6 +112,8 @@ class UploadedFilesStore:
             # a bounded slice — but drop any stale index.
             self._indexes.pop(collection_name, None)
             log.warning("⚠️  Failed to build embeddings for '%s': %s", collection_name, exc)
+        if rebuild_admissions:
+            self._rebuild_admissions()
 
     def upload_json(self, collection_name: str, json_data) -> dict:
         col = get_uploaded_collection(collection_name)
@@ -100,6 +140,9 @@ class UploadedFilesStore:
         self._chunks.pop(collection_name, None)
         self._indexes.pop(collection_name, None)
         self._bm25.pop(collection_name, None)
+        self._chunk_doc_indexes.pop(collection_name, None)
+        self._admissions.remove_collection(collection_name, rebuild=False)
+        self._rebuild_admissions()
         return True
 
     def reload(self, collection_name: str) -> bool:
@@ -119,6 +162,22 @@ class UploadedFilesStore:
 
     def chunks_of(self, collection_name: str) -> List[str]:
         return self._chunks.get(collection_name, [])
+
+    def resolve_admission(
+        self,
+        question: str,
+        allowed_collections: Optional[set[str]] = None,
+    ) -> Optional[AdmissionResolution]:
+        """Resolve an admission question from atomic structured facts, if confident."""
+        if allowed_collections is not None and allowed_collections != set(self._chunks):
+            # The structured catalog is a cross-file index. Until it supports
+            # source masks, skip this shortcut whenever RBAC narrows sources.
+            return None
+        try:
+            return self._admissions.resolve(question)
+        except Exception as exc:
+            log.warning("⚠️  Structured admission lookup failed: %s", exc)
+            return None
 
     def list_files(self) -> List[dict]:
         return [
@@ -181,6 +240,7 @@ class UploadedFilesStore:
         question: str,
         top_k: int = config.TOP_K,
         threshold: float = config.SIM_THRESHOLD,
+        allowed_collections: Optional[set[str]] = None,
     ) -> List[str]:
         """
         Hybrid search across ALL currently uploaded files, merged into a
@@ -195,7 +255,10 @@ class UploadedFilesStore:
         pool_chunks: List[str] = []
         pool_dense: List[np.ndarray] = []
         pool_lexical: List[np.ndarray] = []
+        permitted = set(self._chunks) if allowed_collections is None else set(allowed_collections)
         for collection_name, chunks in self._chunks.items():
+            if collection_name not in permitted:
+                continue
             index = self._usable_index(collection_name)
             if index is None:
                 continue  # this file has no usable embeddings yet — skip it
@@ -211,7 +274,8 @@ class UploadedFilesStore:
         # Degraded fallback: no file has a usable index yet — take a
         # bounded sample across files instead of dumping everything.
         relevant_chunks: List[str] = []
-        per_file_quota = max(1, top_k // max(1, len(self._chunks)))
-        for chunks in self._chunks.values():
+        visible = [chunks for name, chunks in self._chunks.items() if name in permitted]
+        per_file_quota = max(1, top_k // max(1, len(visible)))
+        for chunks in visible:
             relevant_chunks.extend(chunks[:per_file_quota])
         return relevant_chunks[:top_k]
