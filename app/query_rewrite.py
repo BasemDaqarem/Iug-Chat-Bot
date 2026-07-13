@@ -74,6 +74,30 @@ def personalize_query(question: str, major: Optional[str]) -> str:
     )
 
 
+# ── canonical academic terms ─────────────────────────────────────────────────
+# Students ask with colloquial VERBS («كيف اجل الفصل؟») while the corpus
+# stores formal NOUNS («رسوم طلب تأجيل الدراسة»). BM25 has no Arabic stemming,
+# so the verb form never matches lexically and dense retrieval drifts to the
+# nearest topic («ثوابت الفصل الدراسي»). Appending the canonical noun anchors
+# both retrievers. Verb sets are written in NORMALIZED form (أ→ا, ة→ه).
+_CANONICAL_TERMS = {
+    "تأجيل الدراسة": {"اجل", "اجلت", "باجل", "ناجل", "ياجل", "تاجل", "اجيل"},
+    "تسجيل المساقات": {"اسجل", "بسجل", "نسجل", "يسجل", "سجلت"},
+    "انسحاب": {"انسحب", "اسحب", "بنسحب", "ينسحب", "انسحبت"},
+}
+
+
+def add_canonical_terms(query: str) -> str:
+    tokens = set(tokenize(query))
+    additions = [
+        noun for noun, verbs in _CANONICAL_TERMS.items()
+        if tokens & verbs and not set(tokenize(noun)) <= tokens
+    ]
+    if not additions:
+        return query
+    return f"{query} ({' ، '.join(additions)})"
+
+
 # ── 2. anaphora / follow-ups → previous turn ─────────────────────────────────
 # Standalone tokens that signal the question leans on the previous turn.
 _ANAPHORA_TOKENS = {

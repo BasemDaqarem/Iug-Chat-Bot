@@ -60,6 +60,35 @@ class TestPersonalizeImplicitTopics:
         assert out.count("هندسة الحاسوب") == 1
 
 
+class TestAddCanonicalTerms:
+    def test_colloquial_deferral_verb_gains_canonical_noun(self):
+        out = qr.add_canonical_terms("كيف اجل الفصل ظ")
+        assert "تأجيل الدراسة" in out
+        assert out.startswith("كيف اجل الفصل ظ")  # الأصل محفوظ
+
+    def test_hamza_variant_matches_after_normalization(self):
+        assert "تأجيل الدراسة" in qr.add_canonical_terms("بدي أجل الفصل")
+
+    def test_registration_verb(self):
+        assert "تسجيل المساقات" in qr.add_canonical_terms("كيف اسجل المواد؟")
+
+    def test_already_canonical_untouched(self):
+        q = "كم رسوم تأجيل الدراسة؟"
+        assert qr.add_canonical_terms(q) == q
+
+    def test_unrelated_question_untouched(self):
+        q = "كم سعر ساعة كلية الطب؟"
+        assert qr.add_canonical_terms(q) == q
+
+    def test_composes_with_history_chain(self):
+        """سيناريو باسم الحرفي: «كيف اجل الفصل ظ» ثم «كم هيكلف ؟»."""
+        history = [{"user": "كيف اجل الفصل ظ", "assistant": "..."}]
+        combined = qr.with_history_context("كم هيكلف ؟", history)
+        out = qr.add_canonical_terms(combined)
+        assert "تأجيل الدراسة" in out   # المصطلح القانوني وصل للبحث
+        assert "كم هيكلف" in out
+
+
 class TestNeedsHistoryContext:
     def test_demonstratives_trigger(self):
         assert qr.needs_history_context("كم هيكلفني رسوم هذا الطلب")
