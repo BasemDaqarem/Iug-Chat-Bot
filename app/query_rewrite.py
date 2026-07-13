@@ -82,8 +82,11 @@ _ANAPHORA_TOKENS = {
     "اقصد", "قصدي", "قصدت", "يعني",                     # "I mean …" repairs
     "كمان", "ايضا", "برضه", "برضو",                     # "also …" continuations
 }
-# A follow-up is usually short; long questions restate their own context.
-_SHORT_QUESTION_TOKENS = 4
+# A follow-up is usually VERY short («كم هيكلفني؟», «وللماجستير؟»); at 4+
+# tokens questions usually carry their own topic and prepending the previous
+# turn only pollutes retrieval (proven live: «كيف بدي اجل الفصل» + a nursing
+# turn returned nothing useful).
+_SHORT_QUESTION_TOKENS = 3
 
 
 def needs_history_context(question: str) -> bool:
@@ -98,10 +101,19 @@ def needs_history_context(question: str) -> bool:
 def with_history_context(question: str, history: list) -> str:
     """Prefix the previous user turn onto the retrieval query when the current
     question can't stand alone. BM25+RRF then ranks the shared topic («تأجيل»)
-    above lexical noise, and dense retrieval sees the full intent."""
+    above lexical noise, and dense retrieval sees the full intent.
+
+    Chain hop: when the previous turn is ITSELF a vague follow-up («كم
+    هيكلفني؟» then «وشو الشروط؟»), it carries no topic words — climb one more
+    step to the turn before it so the anchoring topic survives the chain."""
     if not history or not needs_history_context(question):
         return question
     last_user = str(history[-1].get("user") or "").strip()
     if not last_user:
         return question
-    return f"{last_user} — {question}"
+    parts = [last_user]
+    if needs_history_context(last_user) and len(history) >= 2:
+        anchor = str(history[-2].get("user") or "").strip()
+        if anchor:
+            parts.insert(0, anchor)
+    return " — ".join(parts + [question])

@@ -70,6 +70,11 @@ class TestNeedsHistoryContext:
 
     def test_short_question_triggers(self):
         assert qr.needs_history_context("كم رسومه؟")
+        assert qr.needs_history_context("وللماجستير؟")
+
+    def test_four_token_topical_question_does_not_trigger(self):
+        # حاملة لموضوعها — إلحاق السابق بها يلوّث الاسترجاع (ثبت حياً)
+        assert not qr.needs_history_context("كيف بدي اجل الفصل")
 
     def test_long_standalone_question_does_not_trigger(self):
         assert not qr.needs_history_context(
@@ -103,3 +108,23 @@ class TestWithHistoryContext:
     def test_empty_last_user_turn_untouched(self):
         q = "كم رسومه؟"
         assert qr.with_history_context(q, [{"user": "", "assistant": "x"}]) == q
+
+    def test_vague_chain_climbs_to_topic_anchor(self):
+        """«كم هيكلفني؟» ثم «وشو الشروط؟» — السابق مبهم بدوره فيُلتقط الراسي قبله."""
+        history = [
+            {"user": "كيف أقدم طلب تأجيل الفصل الدراسي؟", "assistant": "..."},
+            {"user": "كم هيكلفني؟", "assistant": "10 دنانير"},
+        ]
+        out = qr.with_history_context("وشو الشروط؟", history)
+        assert "تأجيل الفصل" in out      # الموضوع الراسي نجا من السلسلة
+        assert "كم هيكلفني؟" in out
+        assert out.endswith("وشو الشروط؟")
+
+    def test_chain_does_not_climb_past_topical_turn(self):
+        history = [
+            {"user": "ما هي المنح المتاحة؟", "assistant": "..."},
+            {"user": "كيف أقدم طلب تأجيل الفصل الدراسي؟", "assistant": "..."},
+        ]
+        out = qr.with_history_context("كم هيكلفني؟", history)
+        assert "تأجيل الفصل" in out
+        assert "المنح" not in out         # السابق حامل لموضوعه — لا صعود أبعد
