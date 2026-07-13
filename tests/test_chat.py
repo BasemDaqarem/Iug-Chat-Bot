@@ -160,6 +160,57 @@ class TestStudentChat(ChatBase):
         self.assertIn("اجل الفصل", searched)          # inherited topic
         self.assertIn("رسوم هذا الطلب", searched)     # current question
 
+    def test_memory_injects_relevant_turn_and_drops_unrelated(self):
+        """الذاكرة الدلالية: الدور القديم ذو الصلة يُحقن، وغير المرتبط يُستبعد،
+        والدور الأحدث يُحقن دائماً، مع التعليمة الملزمة قبل البيانات."""
+        import numpy as np
+        from app.sessions import MEMORY_INSTRUCTION
+
+        def unit(*xs):
+            v = np.asarray(xs, dtype=np.float32)
+            return (v / np.linalg.norm(v)).reshape(-1, 1)
+
+        self.bot.push_history("12345", "سؤال التأجيل القديم", "a1", embedding=unit(1, 0))
+        self.bot.push_history("12345", "سؤال المنح البعيد", "a2", embedding=unit(0, 1))
+        self.bot.push_history("12345", "أحدث سؤال", "a3", embedding=unit(0, 1))
+
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[]), \
+             patch("app.embeddings.embed_query", return_value=unit(1, 0)):
+            self._chat("chat_as_student", "كم رسوم هذا الطلب؟", "12345")
+
+        user_msg = self.llm_calls[-1]["messages"][1]["content"]
+        self.assertIn(MEMORY_INSTRUCTION, user_msg)
+        self.assertIn("سؤال التأجيل القديم", user_msg)   # ذو صلة (cos=1)
+        self.assertNotIn("سؤال المنح البعيد", user_msg)  # متعامد → مستبعد
+        self.assertIn("أحدث سؤال", user_msg)             # الأحدث دائماً
+
+    def test_memory_embedding_stored_once_with_turn(self):
+        """متجه السؤال يُخزَّن مع الدور عند الحفظ — لا يُعاد توليده."""
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[]):
+            self._chat("chat_as_student", "ما رسوم الماجستير؟", "12345")
+        last_turn = self.bot.get_history("12345")[-1]
+        self.assertIn("embedding", last_turn)
+        self.assertIsInstance(last_turn["embedding"], list)
+
+    def test_memory_embedding_failure_falls_back_and_still_answers(self):
+        """فشل توليد المتجه لا يكسر الشات: يعود لطيّ آخر الأدوار كما قبل."""
+        self.bot.push_history("12345", "سؤال سابق", "جواب سابق")
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[]), \
+             patch("app.embeddings.embed_query", side_effect=RuntimeError("jina down")):
+            res = self._chat("chat_as_student", "كم رسوم الساعة؟", "12345")
+
+        self.assertEqual(res["answer"], "إجابة تجريبية من النموذج.")  # الشات يعمل
+        user_msg = self.llm_calls[-1]["messages"][1]["content"]
+        self.assertIn("سؤال سابق", user_msg)             # fallback يشمل السجل
+        # ولا يُخزَّن متجه لهذا الدور (يُحسب لاحقاً عند أول سؤال ناجح تالٍ)
+        self.assertNotIn("embedding", self.bot.get_history("12345")[-1])
+
     def test_private_profile_answers_are_never_shared_through_cache(self):
         profiles = {
             "11111": {**self.PROFILE, "name": "الطالب الأول", "gpa": 91.0},

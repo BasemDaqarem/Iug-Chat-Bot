@@ -11,7 +11,9 @@ clear / format_for_prompt):
 make_session_store() picks one from config.SESSION_BACKEND.
 """
 
-from typing import List
+from typing import List, Optional
+
+import numpy as np
 
 from app import config
 from app.config import HISTORY_TURNS_IN_PROMPT, MAX_HISTORY
@@ -20,6 +22,12 @@ from app.log import get_logger
 log = get_logger("sessions")
 
 SESSIONS_COLLECTION = "chat_sessions"
+
+# التعليمة المطلوبة قبل بيانات الذاكرة المحقونة (تسبق السياق الرئيسي في الرسالة).
+MEMORY_INSTRUCTION = (
+    "قد يكون سؤال المستخدم مرتبطاً ببيانات المحادثة السابقة أدناه. "
+    "راجعها أولاً واستخدمها فقط عند وجود صلة، ثم تابع إلى السياق الرئيسي."
+)
 
 
 def _format_for_prompt(history: list) -> str:
@@ -32,6 +40,44 @@ def _format_for_prompt(history: list) -> str:
     return f"سجل المحادثة السابقة:\n{turns}\n\n"
 
 
+def relevant_turns(
+    history: list, query_vec: Optional[np.ndarray], min_sim: float = None
+) -> list:
+    """الأدوار السابقة ذات الصلة بالسؤال الحالي.
+
+    القاعدة: الدور الأحدث يُبقى دائماً (استمرارية الحوار — أسئلة «اقصد…»
+    و«هذا الطلب» تعتمد عليه حتى لو تباعد متجهاها)، والأقدم منه يُبقى فقط إذا
+    تجاوز تشابه متجه سؤاله المخزَّن العتبة. دور بلا متجه مخزَّن (مسار فوري
+    قديم أو فشل تضمين سابق) لا يمكن تقييمه فيُستبعد إلا إذا كان الأحدث."""
+    if not history:
+        return []
+    if query_vec is None:
+        return history[-HISTORY_TURNS_IN_PROMPT:]
+    if min_sim is None:
+        min_sim = config.MEMORY_MIN_SIM
+    q = np.asarray(query_vec).ravel()
+
+    selected = []
+    for turn in history[:-1]:
+        stored = turn.get("embedding")
+        if not stored:
+            continue
+        if float(np.dot(np.asarray(stored, dtype=np.float32), q)) >= min_sim:
+            selected.append(turn)
+    selected.append(history[-1])
+    return selected
+
+
+def format_memory(turns: list) -> str:
+    """كتلة الذاكرة المحقونة قبل السياق الرئيسي، مسبوقة بالتعليمة الملزمة."""
+    if not turns:
+        return ""
+    body = "\n".join(
+        f"الطالب: {t['user']}\nالمساعد: {t['assistant']}" for t in turns
+    )
+    return f"{MEMORY_INSTRUCTION}\nسجل المحادثة السابقة:\n{body}\n\n"
+
+
 class SessionStore:
     """In-memory history (lost on restart)."""
 
@@ -42,9 +88,12 @@ class SessionStore:
     def get(self, sid: str) -> list:
         return self._sessions.setdefault(sid, [])
 
-    def push(self, sid: str, user: str, assistant: str):
+    def push(self, sid: str, user: str, assistant: str, embedding=None):
         h = self.get(sid)
-        h.append({"user": user, "assistant": assistant})
+        turn = {"user": user, "assistant": assistant}
+        if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
+            turn["embedding"] = np.asarray(embedding).ravel().tolist()
+        h.append(turn)
         if len(h) > self._max_history:
             self._sessions[sid] = h[-self._max_history:]
 
@@ -74,13 +123,16 @@ class MongoSessionStore:
             return []
         return (doc or {}).get("turns", [])
 
-    def push(self, sid: str, user: str, assistant: str):
+    def push(self, sid: str, user: str, assistant: str, embedding=None):
+        turn = {"user": user, "assistant": assistant}
+        if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
+            turn["embedding"] = np.asarray(embedding).ravel().tolist()
         try:
             self._col().update_one(
                 {"_id": str(sid)},
                 {"$push": {"turns": {
-                    "$each": [{"user": user, "assistant": assistant}],
-                    "$slice": -self._max_history,  # keep only the last N turns
+                    "$each": [turn],
+                    "$slice": -self._max_history,  # FIFO: يُطرد الأقدم تلقائياً
                 }}},
                 upsert=True,
             )
