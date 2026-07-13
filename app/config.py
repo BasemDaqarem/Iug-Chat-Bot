@@ -97,7 +97,12 @@ UPLOADED_DB_NAME = os.getenv("UPLOADED_DB_NAME", "uploaded_files")
 
 # ── RAG / chat tuning ─────────────────────────────────────────────────────
 TOP_K = 10
-MAX_HISTORY = 20
+# الذاكرة القصيرة للمحادثة: آخر 5 أدوار فقط (FIFO)، كل دور يحمل متجه سؤاله
+# المحسوب مرة واحدة عند الحفظ — لا يُعاد حسابه أبداً.
+MAX_HISTORY = 5
+# حد التشابه (cosine على متجهات مطبّعة) لاعتبار دور سابق «ذا صلة» بالسؤال
+# الحالي فيُحقن في البرومت. الدور الأحدث يُحقن دائماً (استمرارية الحوار).
+MEMORY_MIN_SIM = float(os.getenv("MEMORY_MIN_SIM", "0.45"))
 SIM_THRESHOLD = 0.25
 
 # ── Hybrid retrieval (dense embeddings + lexical BM25, fused with RRF) ─────

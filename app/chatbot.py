@@ -15,12 +15,16 @@ from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
 from app.knowledge_base import KnowledgeBase
 from app.llm import chat_completion
+from app.log import get_logger
 from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
+from app import sessions as sessions_mod
 from app.sessions import SessionStore, make_session_store
 from app.text_norm import normalize_arabic
 from app.uploaded_files import UploadedFilesStore
 from app.context_builder import build_private_context
 from app.rbac import Principal, Role, prompt_for
+
+log = get_logger("chatbot")
 
 
 class IUGChatbot:
@@ -95,8 +99,8 @@ class IUGChatbot:
     def get_history(self, sid: str) -> list:
         return self._sessions.get(sid)
 
-    def push_history(self, sid: str, user: str, assistant: str):
-        self._sessions.push(sid, user, assistant)
+    def push_history(self, sid: str, user: str, assistant: str, embedding=None):
+        self._sessions.push(sid, user, assistant, embedding)
 
     def clear_history(self, sid: str):
         self._sessions.clear(sid)
@@ -133,13 +137,28 @@ class IUGChatbot:
     # ═════════════════════════════════════════════════════════════════════
 
     def _ask_llm(self, system: str, question: str, session_id: str) -> str:
-        """Shared final step of every chat flow: fold history into the user
-        message, call the LLM, record the turn."""
-        history_text = self.fmt_history(self.get_history(session_id))
-        user_message = f"{history_text}السؤال: {question}"
+        """Shared final step of every chat flow: inject only the RELEVANT
+        previous turns (semantic short-term memory) before the question, call
+        the LLM, record the turn with its reusable embedding."""
+        history = self.get_history(session_id)
+        memory_text, q_vec = self._memory_block(question, history)
+        user_message = f"{memory_text}السؤال: {question}"
         answer = chat_completion(system, user_message)
-        self.push_history(session_id, question, answer)
+        self.push_history(session_id, question, answer, embedding=q_vec)
         return answer
+
+    def _memory_block(self, question: str, history: list):
+        """(نص الذاكرة، متجه السؤال). المتجه يُحسب مرة واحدة هنا ويُخزَّن مع
+        الدور عند الحفظ فلا يُعاد حسابه لاحقاً (embed_query نفسه مُكاش، فالنداء
+        مجاني عندما سبق للاسترجاع تضمين السؤال ذاته). عند فشل التضمين نعود
+        بأمان للسلوك القديم حرفياً: طيّ آخر الأدوار كلها بلا انتقاء."""
+        try:
+            vec = embeddings.embed_query(question)
+        except Exception as exc:
+            log.warning("⚠️ تعذّر تضمين السؤال للذاكرة — fallback نصي: %s", exc)
+            return self.fmt_history(history), None
+        turns = sessions_mod.relevant_turns(history, vec)
+        return sessions_mod.format_memory(turns), vec
 
     @staticmethod
     def _is_generic_engineering_hourly_fee(question: str) -> bool:
