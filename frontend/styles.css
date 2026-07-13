@@ -280,6 +280,18 @@ body {
 
 /* ---------- Footer ---------- */
 .foot { margin-top:20px; text-align:center; font-size:13.5px; color:var(--cream-dim); }
+.guest-entry {
+  width:100%; margin-top:14px; padding:12px 16px;
+  display:grid; grid-template-columns:auto 1fr; align-items:center; column-gap:10px;
+  color:var(--cream); text-align:start; font:700 14px/1.35 inherit;
+  border:1px solid rgba(212,175,55,.24); border-radius:14px;
+  background:rgba(212,175,55,.055); cursor:pointer;
+  transition:transform .2s var(--ease), border-color .25s, background .25s;
+}
+.guest-entry:hover { transform:translateY(-2px); border-color:var(--gold); background:rgba(212,175,55,.1); }
+.guest-entry__icon { grid-row:1 / 3; display:grid; place-items:center; width:32px; height:32px;
+  color:var(--gold); border:1px solid var(--line-strong); border-radius:10px; }
+.guest-entry small { color:var(--cream-dim); font-weight:500; font-size:11.5px; }
 .foot a { color:var(--gold); font-weight:700; text-decoration:none; position:relative; }
 .foot a::after { content:""; position:absolute; right:0; bottom:-2px; width:0; height:1.5px;
   background:var(--gold); transition:width .3s var(--ease); }
