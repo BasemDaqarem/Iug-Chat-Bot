@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#10233d" />
+  <title>بوابة الموظف — المساعد الجامعي</title>
+  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="portal.css?v=1" />
+  <link rel="stylesheet" href="employee.css?v=1" />
+</head>
+<body class="portal-body">
+  <div class="portal-shell">
+    <aside class="side" id="side">
+      <div class="side__brand"><span>✦</span><div><strong>IUG Assistant</strong><small>بوابة الموظف</small></div></div>
+      <nav class="side__nav">
+        <button class="nav-item is-active" data-view="home"><span>⌂</span>الرئيسية</button>
+        <button class="nav-item" data-view="students"><span>♙</span>دليل الطلاب</button>
+        <button class="nav-item" data-view="profile"><span>◇</span>ملفي الوظيفي</button>
+      </nav>
+      <div class="side__foot"><a href="chat.html">فتح الشات بصفحة كاملة</a><button id="logout">تسجيل الخروج</button></div>
+    </aside>
+    <main class="workspace">
+      <header class="topbar"><button class="icon-btn mobile-only" id="menu">☰</button><div><p class="eyebrow">مساحة الموظف الآمنة</p><h1 id="viewTitle">الرئيسية</h1></div><div class="operator"><span class="operator__avatar" id="avatar">م</span><div><strong id="operatorName">الموظف</strong><small id="operatorId">…</small></div></div></header>
+
+      <section class="view is-active" data-panel="home">
+        <div class="employee-grid">
+          <article class="welcome-card"><p class="eyebrow">صباح العمل</p><h2 id="welcomeName">مرحباً بك</h2><p>يمكنك سؤال المساعد عن ملفات الجامعة الداخلية أو بيانات الطلاب الأكاديمية، بينما يظل ملفك المالي خاصاً بك.</p><div class="permission-row"><span>✓ بيانات الطلاب الأكاديمية</span><span>✓ الملفات الداخلية</span><span>✓ بياناتك المالية فقط</span></div></article>
+          <article class="mini-profile"><span class="mini-profile__icon">◇</span><small>القسم</small><strong id="homeDepartment">—</strong><small>المسمى الوظيفي</small><strong id="homeTitle">—</strong><button class="text-btn" data-goto="profile">عرض الملف</button></article>
+        </div>
+        <div class="employee-chat panel">
+          <div class="employee-chat__head"><div><p class="eyebrow">مساعد الموظف</p><h3>اسأل ضمن صلاحيات عملك</h3></div><span class="live-dot"></span></div>
+          <div class="employee-chat__messages" id="messages"><div class="emp-msg emp-msg--bot">أهلاً بك. يمكنني مساعدتك في بيانات الطلاب الأكاديمية، تعليمات الجامعة، وملفك الوظيفي الشخصي.</div></div>
+          <div class="employee-chips"><button>ابحث عن طالب برقم جامعي</button><button>ما راتبي المسجل؟</button><button>ما تعليمات القبول الحالية؟</button></div>
+          <form class="employee-composer" id="chatForm"><input id="question" maxlength="2000" placeholder="اكتب سؤالك…" /><button type="submit">إرسال</button></form>
+        </div>
+      </section>
+
+      <section class="view" data-panel="students">
+        <div class="section-head"><div><p class="eyebrow">البيانات الأكاديمية</p><h2>دليل الطلاب</h2><p>الاسم والرقم والتخصص والمعدل والترتيب والحالة الأكاديمية فقط.</p></div></div>
+        <div class="panel table-panel"><div class="filters student-filter"><input id="studentQuery" type="search" placeholder="ابحث بالرقم أو الاسم أو التخصص…" /><button class="secondary" id="studentSearch">بحث</button></div><div class="table-wrap"><table><thead><tr><th>الطالب</th><th>التخصص</th><th>المعدل</th><th>الترتيب</th><th>الحالة</th><th>آخر تحديث</th></tr></thead><tbody id="studentsBody"></tbody></table></div></div>
+      </section>
+
+      <section class="view" data-panel="profile">
+        <div class="section-head"><div><p class="eyebrow">خاص بك فقط</p><h2>ملفي الوظيفي والمالي</h2><p>لا يستطيع أي موظف آخر رؤية هذا القسم من حسابه.</p></div></div>
+        <div class="profile-layout"><article class="profile-card panel"><div class="profile-card__head"><span id="profileAvatar">م</span><div><h3 id="profileName">—</h3><small id="profileId">—</small></div><span class="badge badge--ok">حساب فعّال</span></div><dl><div><dt>القسم</dt><dd id="profileDepartment">—</dd></div><div><dt>المسمى الوظيفي</dt><dd id="profileTitle">—</dd></div><div><dt>آخر تحديث</dt><dd id="profileUpdated">—</dd></div></dl></article><article class="salary-card"><p class="eyebrow">البيانات المالية</p><span>الراتب المسجل</span><strong id="profileSalary">—</strong><small>هذه القيمة تظهر لصاحب الحساب والأدمن فقط.</small></article></div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="employee.js?v=1"></script>
+</body>
+</html>

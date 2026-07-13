@@ -8,7 +8,7 @@
   // ---------- auth guard ----------
   let auth;
   try { auth = JSON.parse(sessionStorage.getItem("iug_auth") || "null"); } catch (_) {}
-  if (!auth || !auth.token) {           // no signed session → back to login
+  if (!auth || (!auth.token && auth.role !== "guest")) {
     window.location.replace("index.html");
     return;
   }
@@ -28,13 +28,24 @@
     input:    $("#q"),
     send:     $("#send"),
     logout:   $("#logout"),
+    portal:   $("#portalLink"),
   };
 
-  const firstName = (auth.name || "").split(" ")[0] || "الطالب";
-  el.whoami.textContent = `${auth.name || "طالب"} · ${auth.student_id}`;
-  el.welcome.textContent =
-    `أهلاً ${firstName} 👋\nأنا مساعدك في الجامعة الإسلامية بغزة. اسألني عن الرسوم، ` +
-    `الكليات، التخصصات، القبول، المنح، أو أي خدمة طلابية.`;
+  const role = auth.role || "student";
+  const roleNames = { guest: "زائر", student: "طالب", employee: "موظف", admin: "أدمن" };
+  const firstName = (auth.name || "").split(" ")[0] || roleNames[role];
+  el.whoami.textContent = `${auth.name || roleNames[role]}${role === "guest" ? "" : ` · ${auth.user_id || auth.student_id}`}`;
+  el.welcome.textContent = `أهلاً ${firstName} 👋\nأنا مساعد الجامعة الإسلامية بغزة. سأجيبك ضمن صلاحية ${roleNames[role]} فقط.`;
+  if (role === "employee" || role === "admin") {
+    el.portal.hidden = false;
+    el.portal.href = role === "admin" ? "admin.html" : "employee.html";
+    el.portal.textContent = role === "admin" ? "لوحة الإدارة" : "لوحة العمل";
+  }
+  const roleChips = document.querySelectorAll(".chip");
+  if (role === "guest" && roleChips[0]) roleChips[0].remove();
+  if (role !== "guest" && roleChips[0]) roleChips[0].hidden = false;
+  if (role === "employee" && roleChips[0]) roleChips[0].textContent = "ابحث عن بيانات طالب أكاديمية";
+  if (role === "admin" && roleChips[0]) roleChips[0].textContent = "ما حالة ملفات المعرفة؟";
 
   // ---------- lightweight, XSS-safe markdown (only what the bot emits) ------
   function escapeHtml(s) {
@@ -120,12 +131,12 @@
     const dots = typing();
 
     try {
-      const res = await fetch("/api/chat/student", {
+      const endpoint = role === "guest" ? "/api/chat/guest" : "/api/chat";
+      const headers = { "Content-Type": "application/json" };
+      if (auth.token) headers.Authorization = "Bearer " + auth.token;
+      const res = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + auth.token,   // identity from the token
-        },
+        headers,
         body: JSON.stringify({ question }),
       });
       let data = null;

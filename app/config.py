@@ -55,6 +55,12 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
 # Empty by default → those endpoints are DENIED until an admin key is set.
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 
+# Optional one-time bootstrap for the first administrator. There is no public
+# admin-registration endpoint. Leave both empty after the account exists.
+ADMIN_BOOTSTRAP_ID = os.getenv("ADMIN_BOOTSTRAP_ID", "")
+ADMIN_BOOTSTRAP_PASSWORD = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
+ADMIN_BOOTSTRAP_NAME = os.getenv("ADMIN_BOOTSTRAP_NAME", "مدير النظام")
+
 
 def assert_secure_for_production() -> None:
     """Fail closed: refuse to run in production with a weak/default JWT secret,
@@ -71,6 +77,13 @@ def assert_secure_for_production() -> None:
 API_ENV = os.getenv("API_ENV", "development")
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8000"))
+# Files uploaded before the RBAC catalog existed stay visible locally so the
+# current chatbot keeps working. Production defaults to deny until an admin
+# explicitly classifies and publishes each legacy collection.
+LEGACY_UNCATALOGUED_FILES_PUBLIC = os.getenv(
+    "LEGACY_UNCATALOGUED_FILES_PUBLIC",
+    "true" if API_ENV != "production" else "false",
+).lower() == "true"
 # Comma-separated allowed origins for the frontend, e.g. "http://localhost:3000".
 # "*" (dev default) must be replaced with the real frontend origin in production.
 API_CORS_ORIGINS = [
@@ -127,6 +140,7 @@ HISTORY_TURNS_IN_PROMPT = 6
 _ALWAYS_EXCLUDE_FROM_RAG = {
     "students_auth", "refresh_tokens", "users",  # auth/identity/PII
     "chat_sessions", "embedding_index",           # our own persistence collections
+    "file_catalog", "managed_file_versions", "audit_log",
 }
 RAG_EXCLUDE_COLLECTIONS = _ALWAYS_EXCLUDE_FROM_RAG | {
     c.strip() for c in os.getenv("RAG_EXCLUDE_COLLECTIONS", "").split(",") if c.strip()
