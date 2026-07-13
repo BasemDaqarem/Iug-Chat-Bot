@@ -10,7 +10,7 @@ from typing import List
 
 import numpy as np
 
-from app import auth, config, embeddings, privacy
+from app import auth, config, embeddings, privacy, query_rewrite
 from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
 from app.knowledge_base import KnowledgeBase
@@ -371,11 +371,16 @@ class IUGChatbot:
         private_context: str | None = None,
         allowed_collections: set[str] | None = None,
         role_prompt: str | None = None,
+        retrieval_question: str | None = None,
     ) -> dict:
         """
         Same idea as chat_with_file(), but searches across ALL currently
         uploaded files merged into a single global ranking — the LLM only
         ever sees the best top-K chunks overall.
+
+        retrieval_question, when given, replaces the literal question FOR THE
+        SEARCH ONLY (e.g. «رئيس قسمي» expanded with the student's major); the
+        LLM, history, and cache always see what the student actually typed.
         """
         trusted_answer = self._trusted_direct_answer(question)
         if trusted_answer:
@@ -397,10 +402,11 @@ class IUGChatbot:
 
         # A student-specific prompt must never read from or write to the
         # answer cache shared by public users.
+        history = self.get_history(session_id)
         cacheable = (
             config.CACHE_ENABLED
             and private_context is None
-            and not self.get_history(session_id)
+            and not history
         )
         access_key = "*" if allowed_collections is None else ",".join(sorted(allowed_collections))
         cache_key = self._cache_key("all_files", question, access_key) if cacheable else None
@@ -410,14 +416,18 @@ class IUGChatbot:
                 self.push_history(session_id, question, cached["answer"])
                 return dict(cached)
 
-        generic_engineering_fee = self._is_generic_engineering_hourly_fee(question)
+        # Retrieval sees a context-aware query (follow-ups inherit the previous
+        # turn's topic); the LLM still receives the literal question.
+        search_question = query_rewrite.with_history_context(
+            retrieval_question or question, history
+        )
+
+        generic_engineering_fee = self._is_generic_engineering_hourly_fee(search_question)
         if self._uploaded.is_empty():
             relevant_chunks = []
-        elif allowed_collections is None:
-            relevant_chunks = self._search_all_for_question(question, top_k)
         else:
             relevant_chunks = self._search_all_for_question(
-                question, top_k, allowed_collections
+                search_question, top_k, allowed_collections
             )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
@@ -479,6 +489,10 @@ class IUGChatbot:
             student_id,
             private_context=private_context,
             role_prompt=prompt_for(Principal(student_id, Role.STUDENT)),
+            # «رئيس قسمي» → the search also sees the student's actual major.
+            retrieval_question=query_rewrite.expand_self_references(
+                question, profile.get("major")
+            ),
         )
 
     def chat_as_principal(
@@ -500,12 +514,18 @@ class IUGChatbot:
             }
 
         private_context = None
+        retrieval_question = question
         if principal.role != Role.GUEST:
-            private_context = build_private_context(principal, question)
+            account = auth.find_account(principal.subject)
+            private_context = build_private_context(principal, question, account=account)
+            if principal.role == Role.STUDENT:
+                major = ((account or {}).get("profile") or {}).get("major")
+                retrieval_question = query_rewrite.expand_self_references(question, major)
         return self.chat_with_all_files(
             question,
             principal.subject,
             private_context=private_context,
             allowed_collections=allowed_collections,
             role_prompt=prompt_for(principal),
+            retrieval_question=retrieval_question,
         )

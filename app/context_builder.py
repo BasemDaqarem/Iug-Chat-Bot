@@ -24,12 +24,13 @@ def _student_query(question: str) -> str:
     return " ".join(words[:3])
 
 
-def build_private_context(principal: Principal, question: str) -> str:
+def build_private_context(principal: Principal, question: str, account: dict | None = None) -> str:
     sections = ["سياسة الدور:\n" + prompt_for(principal)]
     if principal.role == Role.GUEST:
         return "\n\n".join(sections)
 
-    account = auth.find_account(principal.subject)
+    if account is None:  # callers that already fetched the account pass it in
+        account = auth.find_account(principal.subject)
     profile = dict((account or {}).get("profile") or {})
 
     if principal.role == Role.STUDENT:
