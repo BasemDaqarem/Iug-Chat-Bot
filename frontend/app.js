@@ -20,6 +20,7 @@
     rank:    $("#rank"),
     status:  $("#academic_status"),
     id:      $("#student_id"),
+    idLabel: $("#identifierLabel"),
     pass:    $("#password"),
     eye:     $("#eye"),
     submit:  $("#submit"),
@@ -27,6 +28,7 @@
     msg:     $("#formMsg"),
     foots:   document.querySelectorAll("[data-foot]"),
     registerControls: document.querySelectorAll(".only-register input, .only-register select"),
+    guest:   $("#guestEntry"),
   };
 
   let mode = "login"; // 'login' | 'register'
@@ -53,6 +55,8 @@
     el.opts.forEach((o) => o.classList.toggle("is-active", o.dataset.mode === mode));
     el.label.textContent = COPY[mode].btn;
     el.pass.setAttribute("autocomplete", COPY[mode].pass);
+    el.idLabel.textContent = mode === "register" ? "الرقم الجامعي" : "الرقم الجامعي أو الوظيفي";
+    el.id.placeholder = mode === "register" ? "مثال: 120210001" : "مثال: 120210001 أو EMP-1001";
     el.foots.forEach((f) => (f.hidden = f.dataset.foot !== mode));
     clearMessage();
     clearErrors();
@@ -64,10 +68,12 @@
   );
 
   // ---------- input polish ----------
-  // Student ID: digits only.
+  // Student registration stays numeric; employee/admin login accepts IDs.
   el.id.addEventListener("input", () => {
-    const clean = el.id.value.replace(/\D+/g, "");
-    if (clean !== el.id.value) el.id.value = clean;
+    if (mode === "register") {
+      const clean = el.id.value.replace(/\D+/g, "");
+      if (clean !== el.id.value) el.id.value = clean;
+    }
     clearFieldError(el.id);
   });
   el.name.addEventListener("input", () => clearFieldError(el.name));
@@ -123,8 +129,14 @@
     if (mode === "register" && !el.status.value) {
       setFieldError(el.status, "اختر حالتك الأكاديمية."); ok = false;
     }
-    if (!/^\d{3,20}$/.test(el.id.value)) {
-      setFieldError(el.id, "الرقم الجامعي أرقام فقط (3 خانات على الأقل)."); ok = false;
+    const validId = mode === "register"
+      ? /^\d{3,20}$/.test(el.id.value)
+      : /^[A-Za-z0-9._-]{3,40}$/.test(el.id.value);
+    if (!validId) {
+      setFieldError(el.id, mode === "register"
+        ? "الرقم الجامعي أرقام فقط (3 خانات على الأقل)."
+        : "أدخل رقماً جامعياً أو وظيفياً صحيحاً.");
+      ok = false;
     }
     if (el.pass.value.length < 4) {
       setFieldError(el.pass, "كلمة المرور 4 أحرف على الأقل."); ok = false;
@@ -153,7 +165,9 @@
     el.submit.disabled = true;
 
     const path = mode === "login" ? "/api/auth/login" : "/api/auth/register";
-    const payload = { student_id: el.id.value, password: el.pass.value };
+    const payload = { password: el.pass.value };
+    if (mode === "register" || /^\d+$/.test(el.id.value)) payload.student_id = el.id.value;
+    else payload.identifier = el.id.value;
     if (mode === "register") {
       payload.name = el.name.value.trim();
       payload.major = el.major.value.trim();
@@ -191,6 +205,9 @@
     try {
       sessionStorage.setItem("iug_auth", JSON.stringify({
         student_id: (data && data.student_id) || el.id.value,
+        user_id: (data && data.user_id) || (data && data.student_id) || el.id.value,
+        role: (data && data.role) || "student",
+        must_change_password: Boolean(data && data.must_change_password),
         name: name,
         profile: (data && data.profile) || {},
         token: (data && data.access_token) || "",
@@ -209,7 +226,9 @@
     el.submit.classList.add("is-done");
     const greet = mode === "login" ? "مرحباً بعودتك" : "تم إنشاء حسابك";
     showMessage(name ? `${greet}، ${name} — جارٍ التحويل…` : "جارٍ التحويل…", "ok");
-    setTimeout(() => { window.location.href = "chat.html"; }, 900);
+    const role = (data && data.role) || "student";
+    const destination = role === "admin" ? "admin.html" : role === "employee" ? "employee.html" : "chat.html";
+    setTimeout(() => { window.location.href = destination; }, 900);
   }
 
   function onFailure(status, data) {
@@ -262,4 +281,10 @@
   }
 
   el.form.addEventListener("submit", onSubmit);
+  el.guest.addEventListener("click", () => {
+    sessionStorage.setItem("iug_auth", JSON.stringify({
+      user_id: "guest", student_id: "guest", name: "زائر", role: "guest", token: "",
+    }));
+    window.location.href = "chat.html";
+  });
 })();

@@ -19,6 +19,8 @@ from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
 from app.sessions import SessionStore, make_session_store
 from app.text_norm import normalize_arabic
 from app.uploaded_files import UploadedFilesStore
+from app.context_builder import build_private_context
+from app.rbac import Principal, Role, prompt_for
 
 
 class IUGChatbot:
@@ -189,7 +191,12 @@ class IUGChatbot:
             )
         return ""
 
-    def _search_all_for_question(self, question: str, top_k: int) -> List[str]:
+    def _search_all_for_question(
+        self,
+        question: str,
+        top_k: int,
+        allowed_collections: set[str] | None = None,
+    ) -> List[str]:
         """Retrieve uploaded-file evidence, expanding ambiguous fee queries.
 
         Values remain fully data-driven: the expansion only asks the existing
@@ -204,7 +211,17 @@ class IUGChatbot:
             ))
 
         per_query_k = max(2, (top_k + len(queries) - 1) // len(queries))
-        batches = [self._uploaded.search_all(query, per_query_k) for query in queries]
+        if allowed_collections is None:
+            batches = [self._uploaded.search_all(query, per_query_k) for query in queries]
+        else:
+            batches = [
+                self._uploaded.search_all(
+                    query,
+                    per_query_k,
+                    allowed_collections=allowed_collections,
+                )
+                for query in queries
+            ]
 
         merged: List[str] = []
         seen = set()
@@ -352,6 +369,8 @@ class IUGChatbot:
         top_k: int = config.TOP_K,
         *,
         private_context: str | None = None,
+        allowed_collections: set[str] | None = None,
+        role_prompt: str | None = None,
     ) -> dict:
         """
         Same idea as chat_with_file(), but searches across ALL currently
@@ -367,7 +386,7 @@ class IUGChatbot:
                 "source": "trusted_fact",
             }
 
-        admission = self._uploaded.resolve_admission(question)
+        admission = self._uploaded.resolve_admission(question, allowed_collections)
         if admission is not None:
             self.push_history(session_id, question, admission.answer)
             return {
@@ -383,7 +402,8 @@ class IUGChatbot:
             and private_context is None
             and not self.get_history(session_id)
         )
-        cache_key = self._cache_key("all_files", question) if cacheable else None
+        access_key = "*" if allowed_collections is None else ",".join(sorted(allowed_collections))
+        cache_key = self._cache_key("all_files", question, access_key) if cacheable else None
         if cacheable:
             cached = self._answer_cache.get(cache_key)
             if cached is not None:
@@ -391,13 +411,18 @@ class IUGChatbot:
                 return dict(cached)
 
         generic_engineering_fee = self._is_generic_engineering_hourly_fee(question)
-        relevant_chunks = (
-            []
-            if self._uploaded.is_empty()
-            else self._search_all_for_question(question, top_k)
-        )
+        if self._uploaded.is_empty():
+            relevant_chunks = []
+        elif allowed_collections is None:
+            relevant_chunks = self._search_all_for_question(question, top_k)
+        else:
+            relevant_chunks = self._search_all_for_question(
+                question, top_k, allowed_collections
+            )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
+        if role_prompt:
+            system += "\n\nسياسة الصلاحية الملزمة:\n" + role_prompt
         if private_context is not None:
             system += f"""
 
@@ -453,4 +478,34 @@ class IUGChatbot:
             question,
             student_id,
             private_context=private_context,
+            role_prompt=prompt_for(Principal(student_id, Role.STUDENT)),
+        )
+
+    def chat_as_principal(
+        self,
+        question: str,
+        principal: Principal,
+        *,
+        allowed_collections: set[str],
+    ) -> dict:
+        """Unified role-aware chat path used by the new API endpoints."""
+        if principal.role == Role.STUDENT and privacy.asks_about_other_student(
+            question, principal.subject
+        ):
+            self.push_history(principal.subject, question, privacy.BLOCKED_ANSWER)
+            return {
+                "answer": privacy.BLOCKED_ANSWER,
+                "top_chunks": [],
+                "source": "privacy_block",
+            }
+
+        private_context = None
+        if principal.role != Role.GUEST:
+            private_context = build_private_context(principal, question)
+        return self.chat_with_all_files(
+            question,
+            principal.subject,
+            private_context=private_context,
+            allowed_collections=allowed_collections,
+            role_prompt=prompt_for(principal),
         )
