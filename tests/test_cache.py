@@ -5,6 +5,7 @@ a student's private record is NEVER cached and is always regenerated.
 """
 
 import copy
+import json
 import unittest
 from unittest.mock import patch
 
@@ -84,6 +85,15 @@ class CacheBotBase(unittest.TestCase):
 
     def _chat(self, method, *args):
         def fake_groq(headers, payload):
+            if payload["messages"][0]["content"].startswith("أنت طبقة تهيئة سؤال"):
+                request = json.loads(payload["messages"][1]["content"])
+                profile = request.get("trusted_student_profile") or {}
+                return json.dumps({
+                    "retrieval_query": request["current_question"],
+                    "topic": "",
+                    "profile_fields": profile.get("available_fields", []),
+                    "ambiguous": False,
+                }, ensure_ascii=False)
             self.llm_calls += 1
             return "إجابة عامة"
 

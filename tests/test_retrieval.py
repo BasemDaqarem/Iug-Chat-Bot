@@ -30,9 +30,9 @@ class TestRankChunks(unittest.TestCase):
         results = rank_chunks(_q([1, 0]), self.chunks, self.index, top_k=1, threshold=0.0)
         self.assertEqual(results, ["c_x"])
 
-    def test_fallback_to_best_when_all_below_threshold(self):
-        results = rank_chunks(_q([1, 0]), self.chunks, self.index, top_k=3, threshold=0.999)
-        self.assertEqual(results, ["c_x"])
+    def test_returns_empty_when_all_below_threshold(self):
+        results = rank_chunks(_q([1, 0]), self.chunks, self.index, top_k=3, threshold=1.001)
+        self.assertEqual(results, [])
 
     def test_empty_inputs(self):
         self.assertEqual(rank_chunks(_q([1, 0]), [], None, 3, 0.0), [])

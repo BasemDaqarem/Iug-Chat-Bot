@@ -223,9 +223,9 @@ class UploadedFilesStore:
             dense = (index @ q_vec).flatten()
             lexical = self._lexical_scores(collection_name, all_chunks, question)
             return hybrid_rank(all_chunks, dense, lexical, top_k, threshold)
-        # Degraded fallback (e.g. embeddings API was unreachable when the
-        # file was indexed): bound the payload instead of sending everything.
-        return all_chunks[:top_k]
+        # No usable index means relevance cannot be established safely.
+        # Returning the first records would inject arbitrary evidence.
+        return []
 
     def search_all(
         self,
@@ -259,10 +259,5 @@ class UploadedFilesStore:
             lexical = np.concatenate(pool_lexical)
             return hybrid_rank(pool_chunks, dense, lexical, top_k, threshold)
 
-        # Degraded fallback: no file has a usable index yet — take a
-        # bounded sample across files instead of dumping everything.
-        relevant_chunks: List[str] = []
-        per_file_quota = max(1, top_k // max(1, len(self._chunks)))
-        for chunks in self._chunks.values():
-            relevant_chunks.extend(chunks[:per_file_quota])
-        return relevant_chunks[:top_k]
+        # No usable index means relevance cannot be established safely.
+        return []

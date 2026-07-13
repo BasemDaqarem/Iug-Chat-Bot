@@ -44,11 +44,11 @@ class TestHybridRank(unittest.TestCase):
         out = hybrid_rank(self.chunks, dense, lexical, top_k=3, threshold=0.5)
         self.assertIn("b", out)
 
-    def test_fallback_to_best_when_nothing_confident(self):
+    def test_returns_empty_when_nothing_confident(self):
         dense = np.array([0.1, 0.2, 0.15])
         lexical = np.zeros(3)
         out = hybrid_rank(self.chunks, dense, lexical, top_k=3, threshold=0.9)
-        self.assertEqual(out, ["b"])  # single best fused candidate
+        self.assertEqual(out, [])
 
     def test_empty(self):
         self.assertEqual(hybrid_rank([], np.array([]), np.array([]), 3, 0.5), [])

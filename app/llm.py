@@ -21,7 +21,13 @@ def _provider() -> str:
     return provider_label(config.CHAT_API_URL, "خدمة المحادثة")
 
 
-def chat_completion(system: str, user_message: str) -> str:
+def chat_completion(
+    system: str,
+    user_message: str,
+    *,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> str:
     """One RAG-style completion: Arabic system prompt (context already
     inlined) + the user's message (history already folded in)."""
     if not config.CHAT_API_KEY:
@@ -39,8 +45,8 @@ def chat_completion(system: str, user_message: str) -> str:
             {"role": "system", "content": system},
             {"role": "user",   "content": user_message},
         ],
-        "temperature":      config.LLM_TEMPERATURE,
-        "max_tokens":       config.LLM_MAX_TOKENS,
+        "temperature":      config.LLM_TEMPERATURE if temperature is None else temperature,
+        "max_tokens":       config.LLM_MAX_TOKENS if max_tokens is None else max_tokens,
         "reasoning_effort": config.LLM_REASONING_EFFORT,
     }
     return _post_with_retry(headers, payload)

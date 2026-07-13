@@ -2,8 +2,7 @@
 Ranking over a normalized index (see app.embeddings).
 
 Two strategies live here:
-  • rank_chunks   — pure dense cosine similarity (unchanged, still used as a
-                    fallback and by the corpus-equivalence tests).
+  • rank_chunks   — pure dense cosine similarity.
   • hybrid_rank   — dense + lexical BM25 fused with Reciprocal Rank Fusion,
                     the default retrieval path.
 """
@@ -22,10 +21,7 @@ def rank_chunks(
     top_k: int,
     threshold: float,
 ) -> List[str]:
-    """Shared ranking, used by the main index and every per-uploaded-file
-    index. Falls back to the single best chunk when nothing clears the
-    threshold, so the LLM never gets an empty context from a non-empty
-    corpus."""
+    """Return only chunks that clear the configured similarity threshold."""
     if index is None or len(chunks) == 0 or getattr(index, "size", 0) == 0:
         return []
 
@@ -36,9 +32,6 @@ def rank_chunks(
     for idx in ranked[:top_k]:
         if float(scores[idx]) >= threshold:
             results.append(chunks[int(idx)])
-
-    if not results and len(ranked):
-        results.append(chunks[int(ranked[0])])
 
     return results
 
@@ -80,9 +73,8 @@ def hybrid_rank(
 
     A fused candidate is kept only if it is *confident* — either its dense
     cosine clears `threshold` OR it had a real lexical match — which trims the
-    weak, hallucination-prone tail. If nothing is confident we fall back to
-    the single best fused candidate, so a non-empty corpus never yields an
-    empty context.
+    weak, hallucination-prone tail. If nothing is confident, return no
+    evidence instead of forcing an unrelated chunk into the prompt.
     """
     n = len(chunks)
     if n == 0 or dense_scores is None or len(dense_scores) != n:
@@ -94,8 +86,5 @@ def hybrid_rank(
     for idx in order[:top_k]:
         if dense_scores[idx] >= threshold or lexical_scores[idx] > 0:
             results.append(chunks[idx])
-
-    if not results and order:
-        results.append(chunks[order[0]])
 
     return results

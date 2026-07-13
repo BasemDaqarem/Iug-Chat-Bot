@@ -65,31 +65,38 @@ def asks_about_other_student(question: str, own_student_id: Optional[str] = None
     return False
 
 
-def format_authenticated_profile_context(profile: dict) -> str:
+def format_authenticated_profile_context(
+    profile: dict,
+    fields: Optional[List[str]] = None,
+) -> str:
     """Serialize only approved profile fields for the authenticated caller.
 
     This text is injected into the private system prompt.  It is deliberately
     not embedded, cached, logged, or returned as a retrieved public chunk.
     """
     status = profile.get("academic_status")
-    fields = (
-        ("الاسم", profile.get("name")),
-        ("التخصص", profile.get("major")),
-        ("المعدل التراكمي", profile.get("gpa")),
-        ("الترتيب على الدفعة", profile.get("rank")),
-        ("الحالة الأكاديمية", _STATUS_LABELS.get(status, status) if status else None),
-        ("مصدر البيانات", profile.get("data_source")),
-        ("آخر تحديث", profile.get("updated_at")),
+    allowed = None if fields is None else set(fields)
+    profile_fields = (
+        ("name", "الاسم", profile.get("name")),
+        ("major", "التخصص", profile.get("major")),
+        ("gpa", "المعدل التراكمي", profile.get("gpa")),
+        ("rank", "الترتيب على الدفعة", profile.get("rank")),
+        ("academic_status", "الحالة الأكاديمية", _STATUS_LABELS.get(status, status) if status else None),
+        ("data_source", "مصدر البيانات", profile.get("data_source")),
+        ("updated_at", "آخر تحديث", profile.get("updated_at")),
     )
     lines = ["بيانات الطالب الحالي المصادق عليه (خاصة):"]
     lines.extend(
         f"- {label}: {value}"
-        for label, value in fields
-        if value not in (None, "")
+        for key, label, value in profile_fields
+        if value not in (None, "") and (allowed is None or key in allowed)
     )
-    if profile.get("data_source") == "self_reported_demo":
+    if (
+        profile.get("data_source") == "self_reported_demo"
+        and (allowed is None or "data_source" in allowed)
+    ):
         lines.append("ملاحظة: هذه بيانات تجريبية أدخلها الطالب، وليست سجلاً رسمياً من الجامعة.")
-    return "\n".join(lines)
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def find_sensitive_record(chunk_meta: List[dict], session_id: str) -> Optional[dict]:

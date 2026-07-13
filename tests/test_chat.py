@@ -6,11 +6,13 @@ monolith (whose retrieval behavior we have intentionally superseded).
 """
 
 import copy
+import json
 import unittest
 from unittest.mock import patch
 
 from app import chunking, config, embeddings
 from app.chatbot import IUGChatbot
+from app.contextualizer import ContextualizedQuery
 from app.admissions import AdmissionFact, AdmissionResolution
 from app.sessions import SessionStore
 from tests.test_equivalence import FIXTURE_DATA, UPLOADED_DOCS, fake_embed
@@ -21,6 +23,7 @@ class ChatBase(unittest.TestCase):
     def setUp(self):
         embeddings.reset_query_cache()  # isolate the module-level query cache
         self.llm_calls = []
+        self.contextualizer_calls = []
         self.bot = IUGChatbot(sessions=SessionStore())  # in-memory, no Mongo
 
         data = copy.deepcopy(FIXTURE_DATA)
@@ -36,6 +39,16 @@ class ChatBase(unittest.TestCase):
 
     def _chat(self, method, *args):
         def fake_groq(headers, payload):
+            if payload["messages"][0]["content"].startswith("أنت طبقة تهيئة سؤال"):
+                self.contextualizer_calls.append(payload)
+                request = json.loads(payload["messages"][1]["content"])
+                profile = request.get("trusted_student_profile") or {}
+                return json.dumps({
+                    "retrieval_query": request["current_question"],
+                    "topic": "",
+                    "profile_fields": profile.get("available_fields", []),
+                    "ambiguous": False,
+                }, ensure_ascii=False)
             self.llm_calls.append(payload)
             return "إجابة تجريبية من النموذج."
 
@@ -77,6 +90,28 @@ class TestChatFlows(ChatBase):
         self._chat("chat", "وماذا عن المساقات؟", "sess")
         user_msg = self.llm_calls[-1]["messages"][1]["content"]
         self.assertIn("سجل المحادثة السابقة", user_msg)
+        self.assertIn(
+            "إجابات المساعد السابقة",
+            self.llm_calls[-1]["messages"][0]["content"],
+        )
+
+    def test_followup_retrieves_with_contextualized_question(self):
+        self.bot.push_history("defer-sess", "أريد تأجيل الفصل، ما الإجراءات؟", "راجع التسجيل.")
+        resolved = ContextualizedQuery(
+            retrieval_query="رسوم تأجيل الفصل",
+            topic="تأجيل الفصل",
+        )
+        with patch("app.chatbot.contextualize", return_value=resolved), \
+             patch.object(
+                 self.bot,
+                 "_search_all_for_question",
+                 return_value=["رسوم تأجيل الفصل: 10 دنانير"],
+             ) as search:
+            res = self._chat("chat_with_all_files", "كم بكلفني رسوم؟", "defer-sess")
+
+        search.assert_called_once_with("رسوم تأجيل الفصل", config.TOP_K)
+        self.assertEqual(res["top_chunks"], ["رسوم تأجيل الفصل: 10 دنانير"])
+        self.assertIn("السؤال: كم بكلفني رسوم؟", self.llm_calls[-1]["messages"][1]["content"])
 
 
 class TestStudentChat(ChatBase):
@@ -114,13 +149,20 @@ class TestStudentChat(ChatBase):
     def test_scholarship_question_with_gpa_processes_the_full_question(self):
         scholarship_chunk = "منحة التفوق: يمكن للطالب التقدم وفق شروط المنح المنشورة."
         question = "معدلي 90 ايش في منح متاحة الي"
+        resolved = ContextualizedQuery(
+            retrieval_query="شروط المنح حسب المعدل التراكمي",
+            topic="المنح",
+            profile_fields=("gpa",),
+        )
         with patch("app.auth.find_account",
                    return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch("app.chatbot.contextualize", return_value=resolved), \
              patch.object(self.bot, "_search_all_for_question",
                           return_value=[scholarship_chunk]) as search:
             res = self._chat("chat_as_student", question, "12345")
 
-        search.assert_called_once_with(question, config.TOP_K)
+        search.assert_called_once_with(resolved.retrieval_query, config.TOP_K)
+        self.assertNotIn("90", resolved.retrieval_query)
         self.assertEqual(len(self.llm_calls), 1)
         self.assertEqual(res["source"], "student_context_rag")
         system = self._system_of_last_call()
@@ -129,6 +171,54 @@ class TestStudentChat(ChatBase):
         self.assertIn(question, self.llm_calls[-1]["messages"][1]["content"])
         self.assertEqual(res["top_chunks"], [scholarship_chunk])
         self.assertNotIn("محمد أحمد", "\n".join(res["top_chunks"]))
+
+    def test_department_followup_uses_trusted_major_not_old_bot_answer(self):
+        self.bot.push_history("12345", "ما هو تخصصي؟", "تخصصك هو التمريض.")
+        chunk = "رئيس قسم هندسة الحاسوب: البريد engineering-head@iugaza.edu.ps"
+        resolved = ContextualizedQuery(
+            retrieval_query="كيف أتواصل مع رئيس قسم هندسة الحاسوب؟",
+            topic="رئيس قسم هندسة الحاسوب",
+            profile_fields=("major",),
+        )
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch("app.chatbot.contextualize", return_value=resolved), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[chunk]) as search:
+            res = self._chat(
+                "chat_as_student",
+                "بناء على ذلك كيف أتواصل مع رئيس قسمي؟",
+                "12345",
+            )
+
+        search.assert_called_once_with(resolved.retrieval_query, config.TOP_K)
+        self.assertNotIn("التمريض", resolved.retrieval_query)
+        self.assertEqual(res["top_chunks"], [chunk])
+        system = self._system_of_last_call()
+        self.assertIn("التخصص: هندسة حاسوب", system)
+        self.assertNotIn("- المعدل التراكمي:", system)
+
+    def test_scholarship_retrieval_gets_only_needed_private_field(self):
+        scholarship_chunk = "منحة التفوق: تمنح وفق شرائح المعدل التراكمي المنشورة."
+        resolved = ContextualizedQuery(
+            retrieval_query="شروط منح التفوق حسب المعدل التراكمي",
+            topic="المنح",
+            profile_fields=("gpa",),
+        )
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch("app.chatbot.contextualize", return_value=resolved), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[scholarship_chunk]):
+            res = self._chat(
+                "chat_as_student",
+                "ما المنح المتاحة إلي بناء على معدلي؟",
+                "12345",
+            )
+
+        system = self._system_of_last_call()
+        self.assertIn("المعدل التراكمي: 88.5", system)
+        self.assertNotIn("الاسم: محمد أحمد", system)
+        self.assertNotIn("الترتيب على الدفعة", system)
+        self.assertEqual(res["top_chunks"], [scholarship_chunk])
 
     def test_private_profile_answers_are_never_shared_through_cache(self):
         profiles = {

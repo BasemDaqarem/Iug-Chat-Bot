@@ -13,6 +13,7 @@ import numpy as np
 from app import auth, config, embeddings, privacy
 from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
+from app.contextualizer import ContextualizedQuery, contextualize
 from app.knowledge_base import KnowledgeBase
 from app.llm import chat_completion
 from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
@@ -139,6 +140,18 @@ class IUGChatbot:
         self.push_history(session_id, question, answer)
         return answer
 
+    def _contextualize_for_retrieval(
+        self,
+        question: str,
+        session_id: str,
+        profile: dict | None = None,
+    ) -> ContextualizedQuery:
+        """Resolve follow-ups before retrieval, without trusting old answers."""
+        history = self.get_history(session_id)
+        if not history and not profile:
+            return ContextualizedQuery(retrieval_query=question.strip())
+        return contextualize(question, history, profile or {})
+
     @staticmethod
     def _is_generic_engineering_hourly_fee(question: str) -> bool:
         """Whether a fee question names engineering but omits degree level.
@@ -233,6 +246,18 @@ class IUGChatbot:
         chunk_meta = self._kb.chunk_meta
         current_record = privacy.find_sensitive_record(chunk_meta, session_id)
 
+        # Deterministic privacy/status paths do not need retrieval or an LLM.
+        if privacy.is_academic_status_question(question) and current_record:
+            status_answer = privacy.build_status_from_sensitive_record(current_record["raw"])
+            self.push_history(session_id, question, status_answer)
+            return {"answer": status_answer, "top_chunks": []}
+
+        if privacy.is_ranking_question(question):
+            other_names = privacy.other_sensitive_display_names(chunk_meta, session_id)
+            if privacy.mentions_other_student(question, other_names):
+                self.push_history(session_id, question, privacy.BLOCKED_ANSWER)
+                return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": []}
+
         # ── Cache gate: a turn is PUBLIC (shareable) only if the session owns
         # no sensitive record AND has no prior history — then the answer
         # depends solely on the question + public corpus. Any student with a
@@ -253,8 +278,13 @@ class IUGChatbot:
         # ── Step 1: access-filtered hybrid retrieval ──────────────────────
         # Only public chunks + this session's own sensitive record are
         # candidates (structural isolation), fused dense + lexical ranking.
+        resolved = self._contextualize_for_retrieval(
+            question,
+            session_id,
+            (current_record or {}).get("raw") if current_record else None,
+        )
         relevant_chunks = self._kb.search_for(
-            question   = question,
+            question   = resolved.retrieval_query,
             session_id = session_id,
             top_k      = config.TOP_K,
             threshold  = config.SIM_THRESHOLD,
@@ -264,27 +294,14 @@ class IUGChatbot:
         sensitive_prefix = f"[{self.SENSITIVE_MARKER}|"
         general_chunks = [c for c in relevant_chunks if not c.startswith(sensitive_prefix)]
 
-        # ── Step 3: academic status shortcut ──────────────────────────────
-        if privacy.is_academic_status_question(question) and current_record:
-            status_answer = privacy.build_status_from_sensitive_record(current_record["raw"])
-            self.push_history(session_id, question, status_answer)
-            return {"answer": status_answer, "top_chunks": []}
-
-        # ── Step 4: privacy guard for ranking/GPA questions ───────────────
-        if privacy.is_ranking_question(question):
-            other_names = privacy.other_sensitive_display_names(chunk_meta, session_id)
-            if privacy.mentions_other_student(question, other_names):
-                self.push_history(session_id, question, privacy.BLOCKED_ANSWER)
-                return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": []}
-
-        # ── Step 5: build context (student's own record first, if any) ────
+        # ── Step 3: build context (student's own record first, if any) ────
         if current_record:
             student_context_chunk = privacy.format_sensitive_record_context(current_record)
             context = "\n\n---\n\n".join([student_context_chunk] + general_chunks)
         else:
             context = "\n\n---\n\n".join(general_chunks)
 
-        # ── Step 6: identity note + system prompt ─────────────────────────
+        # ── Step 4: identity note + system prompt ─────────────────────────
         identity_note = ""
         if current_record:
             name = current_record.get("display_name") or "الطالب"
@@ -295,8 +312,10 @@ class IUGChatbot:
             )
 
         system = SYSTEM_PROMPT_TEMPLATE.format(context=context) + identity_note
+        if resolved.ambiguous:
+            system += "\n\nالسؤال الحالي ملتبس؛ اطلب توضيحاً قصيراً إذا لم تحسم المقاطع المقصود."
 
-        # ── Step 7: call LLM ──────────────────────────────────────────────
+        # ── Step 5: call LLM ──────────────────────────────────────────────
         answer = self._ask_llm(system, question, session_id)
         result = {"answer": answer, "top_chunks": general_chunks}
 
@@ -333,9 +352,12 @@ class IUGChatbot:
                 self.push_history(session_id, question, cached["answer"])
                 return dict(cached)
 
-        relevant_chunks = self._uploaded.search_one(question, collection_name)
+        resolved = self._contextualize_for_retrieval(question, session_id)
+        relevant_chunks = self._uploaded.search_one(resolved.retrieval_query, collection_name)
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
+        if resolved.ambiguous:
+            system += "\n\nالسؤال الحالي ملتبس؛ اطلب توضيحاً قصيراً إذا لم تحسم المقاطع المقصود."
         answer  = self._ask_llm(system, question, session_id)
         result = {"answer": answer, "top_chunks": relevant_chunks, "source": "uploaded_file"}
         if cacheable:
@@ -352,13 +374,24 @@ class IUGChatbot:
         top_k: int = config.TOP_K,
         *,
         private_context: str | None = None,
+        retrieval_question: str | None = None,
+        retrieval_topic: str = "",
+        retrieval_ambiguous: bool = False,
     ) -> dict:
         """
         Same idea as chat_with_file(), but searches across ALL currently
         uploaded files merged into a single global ranking — the LLM only
         ever sees the best top-K chunks overall.
         """
-        trusted_answer = self._trusted_direct_answer(question)
+        if retrieval_question is None:
+            resolved = self._contextualize_for_retrieval(question, session_id)
+            effective_question = resolved.retrieval_query
+            retrieval_topic = resolved.topic
+            retrieval_ambiguous = resolved.ambiguous
+        else:
+            effective_question = retrieval_question
+
+        trusted_answer = self._trusted_direct_answer(effective_question)
         if trusted_answer:
             self.push_history(session_id, question, trusted_answer)
             return {
@@ -367,7 +400,7 @@ class IUGChatbot:
                 "source": "trusted_fact",
             }
 
-        admission = self._uploaded.resolve_admission(question)
+        admission = self._uploaded.resolve_admission(effective_question)
         if admission is not None:
             self.push_history(session_id, question, admission.answer)
             return {
@@ -383,18 +416,22 @@ class IUGChatbot:
             and private_context is None
             and not self.get_history(session_id)
         )
-        cache_key = self._cache_key("all_files", question) if cacheable else None
+        cache_key = (
+            self._cache_key("all_files", question, effective_question)
+            if cacheable
+            else None
+        )
         if cacheable:
             cached = self._answer_cache.get(cache_key)
             if cached is not None:
                 self.push_history(session_id, question, cached["answer"])
                 return dict(cached)
 
-        generic_engineering_fee = self._is_generic_engineering_hourly_fee(question)
+        generic_engineering_fee = self._is_generic_engineering_hourly_fee(effective_question)
         relevant_chunks = (
             []
             if self._uploaded.is_empty()
-            else self._search_all_for_question(question, top_k)
+            else self._search_all_for_question(effective_question, top_k)
         )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
@@ -409,6 +446,8 @@ class IUGChatbot:
 - إذا جمع السؤال بين بياناته وموضوع جامعي كالمنح، فادمج بياناته مع المقاطع العامة المسترجعة للإجابة عن المقصود.
 - لا تذكر أو تستنتج بيانات طالب آخر.
 """
+        if retrieval_ambiguous:
+            system += "\nالسؤال ملتبس؛ إذا لم تحسم المقاطع المقصود فاطلب توضيحاً قصيراً ولا تخمّن."
         if generic_engineering_fee:
             system += """
 
@@ -444,8 +483,15 @@ class IUGChatbot:
 
         account = auth.find_account(student_id)
         profile = (account or {}).get("profile") or {}
+        resolved = self._contextualize_for_retrieval(question, student_id, profile)
+
+        selected_fields = list(resolved.profile_fields)
+        if selected_fields and profile.get("data_source"):
+            selected_fields.append("data_source")
+        if selected_fields and profile.get("updated_at"):
+            selected_fields.append("updated_at")
         private_context = (
-            privacy.format_authenticated_profile_context(profile)
+            privacy.format_authenticated_profile_context(profile, selected_fields)
             if profile
             else ""
         )
@@ -453,4 +499,7 @@ class IUGChatbot:
             question,
             student_id,
             private_context=private_context,
+            retrieval_question=resolved.retrieval_query,
+            retrieval_topic=resolved.topic,
+            retrieval_ambiguous=resolved.ambiguous,
         )

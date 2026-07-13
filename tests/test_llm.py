@@ -62,6 +62,20 @@ class TestChatCompletion(unittest.TestCase):
         ])
         self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
 
+    def test_per_call_generation_limits_can_be_reduced(self):
+        captured = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["payload"] = json
+            return FakeResponse()
+
+        with patch.object(config, "CHAT_API_KEY", "test-key"), \
+             patch.object(llm.requests, "post", side_effect=fake_post):
+            llm.chat_completion("s", "u", max_tokens=180, temperature=0.0)
+
+        self.assertEqual(captured["payload"]["max_tokens"], 180)
+        self.assertEqual(captured["payload"]["temperature"], 0.0)
+
     def test_retries_on_429_then_succeeds(self):
         responses = [FakeResponse(429, headers={"Retry-After": "0"}), FakeResponse(content="تم")]
 
