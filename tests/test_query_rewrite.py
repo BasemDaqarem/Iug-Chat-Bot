@@ -28,6 +28,38 @@ class TestExpandSelfReferences:
         assert qr.expand_self_references(q, "هندسة الحاسوب") == q
 
 
+class TestPersonalizeImplicitTopics:
+    def test_field_training_gets_student_major(self):
+        out = qr.personalize_implicit_topics("كيف ممكن انجز التدريب الميداني", "هندسة الحاسوب")
+        assert "هندسة الحاسوب" in out
+
+    def test_graduation_project_gets_student_major(self):
+        out = qr.personalize_implicit_topics("ما متطلبات مشروع التخرج؟", "هندسة الحاسوب")
+        assert "هندسة الحاسوب" in out
+
+    def test_question_naming_another_faculty_untouched(self):
+        q = "كيف التدريب الميداني في كلية الطب؟"
+        assert qr.personalize_implicit_topics(q, "هندسة الحاسوب") == q
+
+    def test_my_faculty_form_still_personalized(self):
+        out = qr.personalize_implicit_topics("التدريب الخاص بقسمي", "هندسة الحاسوب")
+        assert "هندسة الحاسوب" in out
+
+    def test_unrelated_topic_untouched(self):
+        q = "ما رسوم ساعة الماجستير؟"
+        assert qr.personalize_implicit_topics(q, "هندسة الحاسوب") == q
+
+    def test_no_major_untouched(self):
+        q = "كيف ممكن انجز التدريب الميداني"
+        assert qr.personalize_implicit_topics(q, None) == q
+
+    def test_personalize_query_composes_without_duplication(self):
+        # «قسمي» triggers expand_self_references first; the implicit-topic pass
+        # must NOT append the major a second time.
+        out = qr.personalize_query("التدريب الميداني الخاص بقسمي", "هندسة الحاسوب")
+        assert out.count("هندسة الحاسوب") == 1
+
+
 class TestNeedsHistoryContext:
     def test_demonstratives_trigger(self):
         assert qr.needs_history_context("كم هيكلفني رسوم هذا الطلب")

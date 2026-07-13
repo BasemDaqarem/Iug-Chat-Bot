@@ -16,7 +16,7 @@ the LLM (and stored in history) stays exactly what the student typed.
 import re
 from typing import Optional
 
-from app.text_norm import tokenize
+from app.text_norm import normalize_arabic, tokenize
 
 # ── 1. self-references → student profile ─────────────────────────────────────
 # First-person possessives whose referent lives in the student's profile.
@@ -36,6 +36,42 @@ def expand_self_references(question: str, major: Optional[str]) -> str:
     if tokens & _SELF_REF_TOKENS and not set(tokenize(major)) <= tokens:
         return f"{question} — {major}"
     return question
+
+
+# Topics that are implicitly about the student's OWN faculty even without a
+# possessive marker: a CS student asking «كيف انجز التدريب الميداني» means his
+# faculty's training, not any faculty's. Substrings of NORMALIZED text.
+_IMPLICIT_PERSONAL_TOPICS = ("تدريب", "مشروع التخرج", "الخطه الدراسيه")
+
+# … unless the question explicitly names a faculty/department of its own
+# choosing («التدريب الميداني في كلية الطب») — then we must not override it.
+_EXPLICIT_FACULTY_MARKERS = ("كليه", "قسم", "تخصص")
+_SELF_FACULTY_FORMS = ("كليتي", "قسمي", "تخصصي")
+
+
+def personalize_implicit_topics(question: str, major: Optional[str]) -> str:
+    """Append the student's major when the topic is inherently faculty-bound
+    but the question names no faculty, so retrieval prefers HIS faculty's
+    chunks (when they exist) over another faculty's."""
+    if not major:
+        return question
+    norm = normalize_arabic(question)
+    if not any(topic in norm for topic in _IMPLICIT_PERSONAL_TOPICS):
+        return question
+    names_a_faculty = any(m in norm for m in _EXPLICIT_FACULTY_MARKERS)
+    says_my_faculty = any(s in norm for s in _SELF_FACULTY_FORMS)
+    if names_a_faculty and not says_my_faculty:
+        return question
+    if set(tokenize(major)) <= set(tokenize(question)):
+        return question  # major already present (e.g. via expand_self_references)
+    return f"{question} — {major}"
+
+
+def personalize_query(question: str, major: Optional[str]) -> str:
+    """Single entry point: possessive self-references + implicit topics."""
+    return personalize_implicit_topics(
+        expand_self_references(question, major), major
+    )
 
 
 # ── 2. anaphora / follow-ups → previous turn ─────────────────────────────────
