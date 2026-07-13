@@ -14,6 +14,20 @@ class TestExpandSelfReferences:
         assert "الطب" in qr.expand_self_references("ما مساقات تخصصي؟", "الطب")
         assert "التمريض" in qr.expand_self_references("رسوم كليتي", "التمريض")
 
+    def test_bare_definite_alqism_means_my_department(self):
+        """صيغة باسم الحرفية التي فشلت: «رئيس القسم» بأل التعريف = قسمه هو."""
+        out = qr.expand_self_references(
+            "كيف ممكن اتواصل مع رئيس القسم؟", "هندسة الحاسوب"
+        )
+        assert "هندسة الحاسوب" in out
+
+    def test_named_faculty_does_not_trigger_bare_forms(self):
+        # «قسم/كلية + اسم» يُقطَّع بلا أل التعريف على العلامة → لا توسيع
+        q = "كم سعر ساعة كلية التمريض؟"
+        assert qr.expand_self_references(q, "هندسة الحاسوب") == q
+        q2 = "مين رئيس قسم التمريض؟"
+        assert qr.expand_self_references(q2, "هندسة الحاسوب") == q2
+
     def test_no_profile_major_is_noop(self):
         q = "كيف اتواصل مع رئيس قسمي"
         assert qr.expand_self_references(q, None) == q
