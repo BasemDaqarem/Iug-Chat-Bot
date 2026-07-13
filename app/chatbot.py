@@ -442,6 +442,11 @@ class IUGChatbot:
 - افهم سؤال الطالب كاملاً؛ لا تتوقف عند كلمة مثل «معدلي» أو «ترتيبي».
 - استخدم بيانات الطالب فقط عندما تكون مرتبطة بالسؤال، ولا تسرد الملف كاملاً إلا إذا طلبه.
 - إذا جمع السؤال بين بياناته وموضوع جامعي كالمنح، فادمج بياناته مع المقاطع العامة المسترجعة للإجابة عن المقصود.
+- ⚠️ قاعدة ملزمة: إذا سأل الطالب عن إجراء يخص كليته (كالتدريب الميداني أو مشروع التخرج)
+  ولم تجد في المقاطع معلومات لكليته هو تحديداً (قارن مع تخصصه في بياناته أعلاه)، فيجب أن
+  تبدأ إجابتك حرفياً بتوضيح ذلك، مثل: «لا تتوفر لدي تفاصيل التدريب الميداني لكليتك
+  (الهندسة — قسم X)، ويُنصح بمراجعة كليتك مباشرة.» وبعدها فقط يجوز أن تعرض المتوفر عن
+  كلية أخرى موصوفاً صراحة بأنه يخص تلك الكلية الأخرى كمرجع عام — لا كإجراءات كليته.
 - لا تذكر أو تستنتج بيانات طالب آخر.
 """
         if generic_engineering_fee:
@@ -489,8 +494,9 @@ class IUGChatbot:
             student_id,
             private_context=private_context,
             role_prompt=prompt_for(Principal(student_id, Role.STUDENT)),
-            # «رئيس قسمي» → the search also sees the student's actual major.
-            retrieval_question=query_rewrite.expand_self_references(
+            # «رئيس قسمي» / «التدريب الميداني» → the search also sees the
+            # student's actual major.
+            retrieval_question=query_rewrite.personalize_query(
                 question, profile.get("major")
             ),
         )
@@ -520,7 +526,7 @@ class IUGChatbot:
             private_context = build_private_context(principal, question, account=account)
             if principal.role == Role.STUDENT:
                 major = ((account or {}).get("profile") or {}).get("major")
-                retrieval_question = query_rewrite.expand_self_references(question, major)
+                retrieval_question = query_rewrite.personalize_query(question, major)
         return self.chat_with_all_files(
             question,
             principal.subject,
