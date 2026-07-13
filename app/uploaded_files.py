@@ -163,8 +163,16 @@ class UploadedFilesStore:
     def chunks_of(self, collection_name: str) -> List[str]:
         return self._chunks.get(collection_name, [])
 
-    def resolve_admission(self, question: str) -> Optional[AdmissionResolution]:
+    def resolve_admission(
+        self,
+        question: str,
+        allowed_collections: Optional[set[str]] = None,
+    ) -> Optional[AdmissionResolution]:
         """Resolve an admission question from atomic structured facts, if confident."""
+        if allowed_collections is not None and allowed_collections != set(self._chunks):
+            # The structured catalog is a cross-file index. Until it supports
+            # source masks, skip this shortcut whenever RBAC narrows sources.
+            return None
         try:
             return self._admissions.resolve(question)
         except Exception as exc:
@@ -232,6 +240,7 @@ class UploadedFilesStore:
         question: str,
         top_k: int = config.TOP_K,
         threshold: float = config.SIM_THRESHOLD,
+        allowed_collections: Optional[set[str]] = None,
     ) -> List[str]:
         """
         Hybrid search across ALL currently uploaded files, merged into a
@@ -246,7 +255,10 @@ class UploadedFilesStore:
         pool_chunks: List[str] = []
         pool_dense: List[np.ndarray] = []
         pool_lexical: List[np.ndarray] = []
+        permitted = set(self._chunks) if allowed_collections is None else set(allowed_collections)
         for collection_name, chunks in self._chunks.items():
+            if collection_name not in permitted:
+                continue
             index = self._usable_index(collection_name)
             if index is None:
                 continue  # this file has no usable embeddings yet — skip it
@@ -262,7 +274,8 @@ class UploadedFilesStore:
         # Degraded fallback: no file has a usable index yet — take a
         # bounded sample across files instead of dumping everything.
         relevant_chunks: List[str] = []
-        per_file_quota = max(1, top_k // max(1, len(self._chunks)))
-        for chunks in self._chunks.values():
+        visible = [chunks for name, chunks in self._chunks.items() if name in permitted]
+        per_file_quota = max(1, top_k // max(1, len(visible)))
+        for chunks in visible:
             relevant_chunks.extend(chunks[:per_file_quota])
         return relevant_chunks[:top_k]

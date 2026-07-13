@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0d0d0f" />
-  <title>بوابة الطالب — الجامعة الإسلامية بغزة</title>
+  <title>بوابة المساعد الجامعي — الجامعة الإسلامية بغزة</title>
   <link rel="stylesheet" href="styles.css?v=3" />
 </head>
 <body>
@@ -34,7 +34,7 @@
                   d="M14 30c0 13 8 22 18 27 10-5 18-14 18-27"/>
           </svg>
         </span>
-        <h1 class="brand__title">بوابة الطالب</h1>
+        <h1 class="brand__title">بوابة المساعد الجامعي</h1>
         <p class="brand__sub">الجامعة الإسلامية بغزة</p>
       </header>
 
@@ -108,13 +108,13 @@
           <span class="field__err" data-err="academic_status"></span>
         </div>
 
-        <!-- Student ID -->
+        <!-- University / employee ID -->
         <div class="field reveal" style="--i:7" data-role="student_id">
-          <label class="field__label" for="student_id">الرقم الجامعي</label>
+          <label class="field__label" for="student_id" id="identifierLabel">الرقم الجامعي أو الوظيفي</label>
           <div class="field__box">
             <svg class="field__icon" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 5v2h5V9H6Zm0 4v2h8v-2H6Zm10-4v6h2V9h-2Z"/></svg>
-            <input id="student_id" name="student_id" type="text" inputmode="numeric"
-                   autocomplete="username" placeholder="مثال: 120210001" maxlength="20" />
+            <input id="student_id" name="student_id" type="text"
+                   autocomplete="username" placeholder="مثال: 120210001 أو EMP-1001" maxlength="40" />
           </div>
           <span class="field__err" data-err="student_id"></span>
         </div>
@@ -144,6 +144,12 @@
         </button>
       </form>
 
+      <button class="guest-entry reveal" style="--i:6" id="guestEntry" type="button">
+        <span class="guest-entry__icon">✦</span>
+        المتابعة كزائر
+        <small>الوصول إلى معلومات الجامعة العامة فقط</small>
+      </button>
+
       <p class="foot reveal" style="--i:6">
         <span data-foot="login">ليس لديك حساب؟ <a href="#" data-goto="register">أنشئ حساباً</a></span>
         <span data-foot="register" hidden>لديك حساب بالفعل؟ <a href="#" data-goto="login">سجّل الدخول</a></span>
@@ -151,6 +157,6 @@
     </section>
   </main>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

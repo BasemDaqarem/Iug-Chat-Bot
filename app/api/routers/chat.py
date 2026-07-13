@@ -14,10 +14,14 @@ the event loop or other requests.
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_bot, get_current_student
+from uuid import uuid4
+
+from app import file_catalog
+from app.api.deps import get_bot, get_current_principal, get_current_student
 from app.api.errors import NotFoundError
 from app.api.schemas import ChatResponse, ErrorResponse, StudentChatRequest
 from app.chatbot import IUGChatbot
+from app.rbac import Principal, Role
 
 # Upstream failures (LLM / embeddings) raise UpstreamServiceError inside the
 # pipeline and are turned into a clean 502 by the centralized error handler —
@@ -46,7 +50,14 @@ def chat_student(
     student_id: str = Depends(get_current_student),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
-    return ChatResponse(**bot.chat_as_student(body.question, student_id))
+    if not isinstance(bot, IUGChatbot):
+        return ChatResponse(**bot.chat_as_student(body.question, student_id))
+    principal = Principal(student_id, Role.STUDENT)
+    available = {item["collection"] for item in bot.get_uploaded_files_list()}
+    allowed = file_catalog.allowed_collections(principal, available)
+    return ChatResponse(**bot.chat_as_principal(
+        body.question, principal, allowed_collections=allowed
+    ))
 
 
 @router.post(
@@ -57,10 +68,36 @@ def chat_student(
 )
 def chat(
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    principal: Principal = Depends(get_current_principal),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
-    return ChatResponse(**bot.chat(body.question, student_id))
+    # Keep lightweight injected test/legacy bots compatible during migration.
+    if not hasattr(bot, "chat_as_principal"):
+        return ChatResponse(**bot.chat(body.question, principal.subject))
+    available = {item["collection"] for item in bot.get_uploaded_files_list()}
+    allowed = file_catalog.allowed_collections(principal, available)
+    return ChatResponse(**bot.chat_as_principal(
+        body.question, principal, allowed_collections=allowed
+    ))
+
+
+@router.post(
+    "/guest",
+    response_model=ChatResponse,
+    summary="محادثة الزائر من الملفات العامة فقط",
+)
+def chat_guest(
+    body: StudentChatRequest,
+    bot: IUGChatbot = Depends(get_bot),
+) -> ChatResponse:
+    principal = Principal.guest(f"guest:{uuid4().hex}")
+    if not hasattr(bot, "chat_as_principal"):
+        return ChatResponse(**bot.chat(body.question, principal.subject))
+    available = {item["collection"] for item in bot.get_uploaded_files_list()}
+    allowed = file_catalog.allowed_collections(principal, available)
+    return ChatResponse(**bot.chat_as_principal(
+        body.question, principal, allowed_collections=allowed
+    ))
 
 
 @router.post(
@@ -71,10 +108,16 @@ def chat(
 )
 def chat_all_files(
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    principal: Principal = Depends(get_current_principal),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
-    return ChatResponse(**bot.chat_with_all_files(body.question, student_id))
+    if not isinstance(bot, IUGChatbot):
+        return ChatResponse(**bot.chat_with_all_files(body.question, principal.subject))
+    available = {item["collection"] for item in bot.get_uploaded_files_list()}
+    allowed = file_catalog.allowed_collections(principal, available)
+    return ChatResponse(**bot.chat_as_principal(
+        body.question, principal, allowed_collections=allowed
+    ))
 
 
 @router.post(
@@ -87,10 +130,14 @@ def chat_all_files(
 def chat_one_file(
     collection_name: str,
     body: StudentChatRequest,
-    student_id: str = Depends(get_current_student),
+    principal: Principal = Depends(get_current_principal),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
     files = {f["collection"] for f in bot.get_uploaded_files_list()}
     if collection_name not in files:
         raise NotFoundError(f"الملف '{collection_name}' غير موجود. ارفعه أولاً.")
-    return ChatResponse(**bot.chat_with_file(body.question, collection_name, student_id))
+    if isinstance(bot, IUGChatbot):
+        allowed = file_catalog.allowed_collections(principal, files)
+        if collection_name not in allowed:
+            raise NotFoundError(f"الملف '{collection_name}' غير موجود ضمن صلاحياتك.")
+    return ChatResponse(**bot.chat_with_file(body.question, collection_name, principal.subject))
