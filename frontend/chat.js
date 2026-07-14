@@ -131,28 +131,12 @@
     const dots = typing();
 
     try {
-      const endpoint = role === "guest" ? "/api/chat/guest" : "/api/chat";
-      const headers = { "Content-Type": "application/json" };
-      if (auth.token) headers.Authorization = "Bearer " + auth.token;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ question }),
-      });
-      let data = null;
-      try { data = await res.json(); } catch (_) {}
-      dots.remove();
-
-      if (res.status === 401) {           // token missing/expired → re-login
-        endSession("انتهت صلاحية جلستك، سجّل الدخول من جديد.");
-        return;
-      }
-      if (res.ok && data) {
-        bubble(data.answer || "لم أستطع إيجاد إجابة.", "bot");
+      // Signed-in students get the token-by-token stream; guests use the
+      // plain endpoint (no token to stream under).
+      if (auth.token && role !== "guest") {
+        await streamAsk(question, dots);
       } else {
-        const msg = (data && data.error && data.error.message) ||
-                    "تعذّر الحصول على إجابة. حاول مجدداً.";
-        bubble("⚠️ " + msg, "bot");
+        await plainAsk(question, dots);
       }
     } catch (_) {
       dots.remove();
@@ -161,6 +145,56 @@
       busy = false;
       el.send.disabled = false;
       el.input.focus();
+    }
+  }
+
+  // Stream: render the answer as it arrives, growing the same bubble.
+  async function streamAsk(question, dots) {
+    const res = await fetch("/api/chat/student/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + auth.token },
+      body: JSON.stringify({ question }),
+    });
+    if (res.status === 401) {            // token missing/expired → re-login
+      dots.remove();
+      endSession("انتهت صلاحية جلستك، سجّل الدخول من جديد.");
+      return;
+    }
+    if (!res.ok || !res.body) {          // pre-stream error (e.g. 429) = JSON
+      dots.remove();
+      let data = null; try { data = await res.json(); } catch (_) {}
+      bubble("⚠️ " + ((data && data.error && data.error.message) ||
+                      "تعذّر الحصول على إجابة. حاول مجدداً."), "bot");
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let full = "", botBubble = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      full += decoder.decode(value, { stream: true });
+      if (!botBubble) { dots.remove(); botBubble = bubble("", "bot"); }
+      botBubble.innerHTML = renderMarkdown(full);
+      scrollToEnd();
+    }
+    if (!botBubble) { dots.remove(); bubble("لم أستطع إيجاد إجابة.", "bot"); }
+  }
+
+  // Non-stream fallback for guests.
+  async function plainAsk(question, dots) {
+    const res = await fetch("/api/chat/guest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    let data = null; try { data = await res.json(); } catch (_) {}
+    dots.remove();
+    if (res.ok && data) {
+      bubble(data.answer || "لم أستطع إيجاد إجابة.", "bot");
+    } else {
+      bubble("⚠️ " + ((data && data.error && data.error.message) ||
+                      "تعذّر الحصول على إجابة. حاول مجدداً."), "bot");
     }
   }
 
