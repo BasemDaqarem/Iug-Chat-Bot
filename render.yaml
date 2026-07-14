@@ -1,111 +1,114 @@
-# نشر تجريبي على Render — https://render.com
-# رابط عام دائم يجرّبه أعضاء المشروع من المتصفح عبر /docs (بلا واجهة).
-# الأسرار (المفاتيح) تُضاف يدوياً في لوحة Render (sync: false) ولا تُرفع في git.
+# ═══════════════════════════════════════════════════════════════════════
+#  نشر شات بوت الجامعة الإسلامية على Render — https://render.com
+#
+#  الطريقة: New ➜ Blueprint ➜ اختر مستودع GitHub — يقرأ Render هذا الملف
+#  وينشئ الخدمة تلقائياً. بعدها عبّئ الأسرار (sync: false أدناه) في
+#  لوحة Render ➜ Environment، ثم Deploy.
+#
+#  الروابط بعد النشر:
+#    https://<اسم-الخدمة>.onrender.com/app              ← واجهة الطلاب
+#    https://<اسم-الخدمة>.onrender.com/app/admin.html   ← لوحة الإدارة
+#    https://<اسم-الخدمة>.onrender.com/health           ← فحص الجاهزية
+#
+#  ⚠️ لا تكتب أي سرّ (مفتاح/كلمة مرور/رابط Mongo) داخل هذا الملف أبداً —
+#     كل الأسرار تُعبّأ في لوحة Render فقط.
+# ═══════════════════════════════════════════════════════════════════════
 
-# services:
-#   - type: web
-#     name: iug-chatbot-api
-#     runtime: python
-#     plan: free
-#     buildCommand: pip install -r requirements.txt
-#     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
-#     healthCheckPath: /health
-#     envVars:
-#       # نُبقي /docs متاحة للفريق أثناء التجربة (production تُخفيها)
-#       - key: API_ENV
-#         value: development
-#       - key: PYTHON_VERSION
-#         value: 3.11.9
-#       - key: API_CORS_ORIGINS
-#         value: "*"
-#       # ── أسرار: عبّئها في لوحة Render (Environment) — لا تُكتب هنا ──
-#       - key: MONGO_URI
-#         sync: false
-#       - key: MONGO_DB_NAME
-#         sync: false
-#       - key: UPLOADED_DB_NAME
-#         sync: false
-#       - key: CHAT_API_URL
-#         sync: false
-#       - key: CHAT_API_KEY
-#         sync: false
-#       - key: CHAT_API_MODEL
-#         sync: false
-#       - key: EMBED_API_URL
-#         sync: false
-#       - key: EMBED_API_KEY
-#         sync: false
-#       - key: EMBED_MODEL
-#         sync: false
 services:
   - type: web
-    name: iug-chatbot-api
+    name: iug-chatbot
     runtime: python
-    plan: free
+    plan: free                      # كافٍ للتجربة (ينام بعد 15 دقيقة خمول)
     branch: main
-
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    autoDeployTrigger: commit
+    autoDeployTrigger: commit       # كل push إلى main = نشر تلقائي
 
     envVars:
+      # ── بيئة التشغيل ────────────────────────────────────────────────
       - key: API_ENV
-        value: production
+        value: production           # يخفي /docs ويرفض الأسرار الضعيفة (fail-closed)
 
       - key: PYTHON_VERSION
         value: 3.11.9
 
-      # الواجهة والخادم على نفس النطاق؛ لا نحتاج CORS خارجي
+      # الواجهة تُقدَّم من نفس الخادم على /app — لا حاجة لأصول CORS خارجية
       - key: API_CORS_ORIGINS
         value: ""
 
+      # ── التخزين الدائم (قرص Render مؤقت — كل شيء في Mongo) ─────────
       - key: INDEX_BACKEND
-        value: mongo
+        value: mongo                # فهرس المتجهات يبقى بعد إعادة النشر
 
       - key: SESSION_BACKEND
-        value: mongo
+        value: mongo                # سجل المحادثات يبقى بعد إعادة النشر
 
       - key: CACHE_ENABLED
         value: "true"
 
+      # ── سياسات مرحلة التجربة (بدّلها عند الإطلاق الحقيقي) ──────────
+      # true = الطالب يسجّل نفسه ببيانات تجريبية (وضع العرض الحالي).
+      # عند الربط بنظام القبول الحقيقي: اجعلها false.
+      - key: ALLOW_PUBLIC_REGISTRATION
+        value: "true"
+
+      # true = الملفات المرفوعة قبل نظام السجل (الـ22 الحالية) تبقى ظاهرة
+      # للجميع كما هي اليوم. بعد تصنيفها من لوحة الأدمن اجعلها false
+      # ليصبح كل ملف محكوماً بتصنيفه فقط.
+      - key: LEGACY_UNCATALOGUED_FILES_PUBLIC
+        value: "true"
+
+      # ── الجلسات والحدود ─────────────────────────────────────────────
       - key: JWT_EXPIRE_HOURS
         value: "12"
+
+      - key: RATE_LIMIT_CHAT_PER_MIN
+        value: "30"
+
+      - key: RATE_LIMIT_LOGIN_PER_MIN
+        value: "10"
 
       - key: LOG_LEVEL
         value: INFO
 
-      # Render يولّد أسراراً عشوائية قوية
+      # ── أسرار يولّدها Render تلقائياً (قوية وعشوائية) ────────────────
       - key: JWT_SECRET
-        generateValue: true
+        generateValue: true         # توقيع توكنات الدخول
 
       - key: ADMIN_API_KEY
-        generateValue: true
+        generateValue: true         # مفتاح مسارات الإدارة القديمة (X-Admin-Key)
 
-      # تُدخل هذه القيم في لوحة Render، ولا تضعها في GitHub
+      # ── أسرار تُعبّأ يدوياً في لوحة Render (Environment) ─────────────
+      # قاعدة البيانات — انسخ Connection String من MongoDB Atlas
       - key: MONGO_URI
         sync: false
-
       - key: MONGO_DB_NAME
-        sync: false
-
+        sync: false                 # iug_chatbot
       - key: UPLOADED_DB_NAME
-        sync: false
+        sync: false                 # uploaded_files
 
+      # مزوّد المحادثة (OpenRouter أو أي واجهة متوافقة مع OpenAI)
       - key: CHAT_API_URL
         sync: false
-
       - key: CHAT_API_KEY
         sync: false
-
       - key: CHAT_API_MODEL
-        sync: false
+        sync: false                 # openai/gpt-oss-20b
 
+      # مزوّد التضمين (Jina)
       - key: EMBED_API_URL
         sync: false
-
       - key: EMBED_API_KEY
         sync: false
-
       - key: EMBED_MODEL
+        sync: false                 # jina-embeddings-v3
+
+      # أول حساب أدمن — يُنشأ تلقائياً عند أول إقلاع إن لم يوجد.
+      # عبّئهما مرة واحدة، وبعد نجاح الدخول احذفهما من اللوحة.
+      - key: ADMIN_BOOTSTRAP_ID
         sync: false
+      - key: ADMIN_BOOTSTRAP_PASSWORD
+        sync: false
+      - key: ADMIN_BOOTSTRAP_NAME
+        value: "مدير النظام"
