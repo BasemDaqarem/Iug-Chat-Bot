@@ -8,7 +8,10 @@ Cross-cutting HTTP middleware, wired in one place (create_app calls setup()).
                      so per-request latency visibility matters.
   • GZip           — chat responses carry Arabic context chunks (very
                      compressible text); compression cuts payload size a lot
-                     for slow connections.
+                     for slow connections. The token-by-token streaming route
+                     is EXEMPT: gzip buffers to accumulate bytes before
+                     flushing, which collapses a live stream back into one late
+                     chunk — the exact bug that made streaming feel non-streamed.
 """
 
 import time
@@ -23,6 +26,22 @@ from app.log import get_logger
 log = get_logger("api")
 
 
+class SelectiveGZipMiddleware(GZipMiddleware):
+    """GZip everything EXCEPT streaming endpoints. Compressing a token stream
+    holds bytes back until the compressor's buffer fills, destroying the
+    incremental delivery, so those paths pass through uncompressed."""
+
+    def __init__(self, app, *, exempt_suffixes=("/stream",), **kwargs):
+        super().__init__(app, **kwargs)
+        self._exempt = tuple(exempt_suffixes)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path", "").endswith(self._exempt):
+            await self.app(scope, receive, send)   # bypass gzip → true streaming
+            return
+        await super().__call__(scope, receive, send)
+
+
 async def timing_middleware(request: Request, call_next):
     start = time.perf_counter()
     response = await call_next(request)
@@ -35,7 +54,7 @@ async def timing_middleware(request: Request, call_next):
 
 def setup(app: FastAPI) -> None:
     app.middleware("http")(timing_middleware)
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.API_CORS_ORIGINS,

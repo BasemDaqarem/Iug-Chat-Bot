@@ -13,8 +13,9 @@ import numpy as np
 from app import auth, config, embeddings, privacy, query_rewrite
 from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
+from app.errors import ChatbotError
 from app.knowledge_base import KnowledgeBase
-from app.llm import chat_completion
+from app.llm import chat_completion, stream_completion
 from app.log import get_logger
 from app.prompts import SYSTEM_PROMPT_TEMPLATE, UPLOADED_FILE_SYSTEM_PROMPT
 from app import sessions as sessions_mod
@@ -136,13 +137,18 @@ class IUGChatbot:
     #  CHAT ORCHESTRATION
     # ═════════════════════════════════════════════════════════════════════
 
+    def _build_user_message(self, question: str, session_id: str):
+        """(نص رسالة المستخدم مع الذاكرة المنتقاة، متجه السؤال). مشترك بين
+        المسار العادي والبثّ، فالذاكرة تُبنى بنفس الطريقة في الحالتين."""
+        history = self.get_history(session_id)
+        memory_text, q_vec = self._memory_block(question, history)
+        return f"{memory_text}السؤال: {question}", q_vec
+
     def _ask_llm(self, system: str, question: str, session_id: str) -> str:
         """Shared final step of every chat flow: inject only the RELEVANT
         previous turns (semantic short-term memory) before the question, call
         the LLM, record the turn with its reusable embedding."""
-        history = self.get_history(session_id)
-        memory_text, q_vec = self._memory_block(question, history)
-        user_message = f"{memory_text}السؤال: {question}"
+        user_message, q_vec = self._build_user_message(question, session_id)
         answer = chat_completion(system, user_message)
         self.push_history(session_id, question, answer, embedding=q_vec)
         return answer
@@ -401,23 +407,55 @@ class IUGChatbot:
         SEARCH ONLY (e.g. «رئيس قسمي» expanded with the student's major); the
         LLM, history, and cache always see what the student actually typed.
         """
+        prepared = self._prepare_all_files(
+            question, session_id, top_k,
+            private_context=private_context,
+            allowed_collections=allowed_collections,
+            role_prompt=role_prompt,
+            retrieval_question=retrieval_question,
+        )
+        if prepared["kind"] == "instant":
+            return prepared["result"]
+
+        answer = self._ask_llm(prepared["system"], question, session_id)
+        result = {"answer": answer, "top_chunks": prepared["chunks"], "source": prepared["source"]}
+        if prepared["cache_key"]:
+            self._answer_cache.set(
+                prepared["cache_key"],
+                {"answer": answer, "top_chunks": list(prepared["chunks"]),
+                 "source": "uploaded_files_all"},
+            )
+        return result
+
+    def _prepare_all_files(
+        self,
+        question: str,
+        session_id: str,
+        top_k: int = config.TOP_K,
+        *,
+        private_context: str | None = None,
+        allowed_collections: set[str] | None = None,
+        role_prompt: str | None = None,
+        retrieval_question: str | None = None,
+    ) -> dict:
+        """Everything an all-files turn needs BEFORE the LLM call, shared by the
+        blocking (`chat_with_all_files`) and streaming (`stream_answer`) paths so
+        the two can never drift. Returns either:
+          {"kind": "instant", "result": {...}}     — no LLM needed (trusted /
+                                                      admission / cache hit)
+          {"kind": "llm", "system", "chunks", "source", "cache_key"}"""
         trusted_answer = self._trusted_direct_answer(question)
         if trusted_answer:
             self.push_history(session_id, question, trusted_answer)
-            return {
-                "answer": trusted_answer,
-                "top_chunks": [],
-                "source": "trusted_fact",
-            }
+            return {"kind": "instant", "result": {
+                "answer": trusted_answer, "top_chunks": [], "source": "trusted_fact"}}
 
         admission = self._uploaded.resolve_admission(question, allowed_collections)
         if admission is not None:
             self.push_history(session_id, question, admission.answer)
-            return {
-                "answer": admission.answer,
-                "top_chunks": admission.top_chunks,
-                "source": "structured_admission",
-            }
+            return {"kind": "instant", "result": {
+                "answer": admission.answer, "top_chunks": admission.top_chunks,
+                "source": "structured_admission"}}
 
         # A student-specific prompt must never read from or write to the
         # answer cache shared by public users.
@@ -433,7 +471,7 @@ class IUGChatbot:
             cached = self._answer_cache.get(cache_key)
             if cached is not None:
                 self.push_history(session_id, question, cached["answer"])
-                return dict(cached)
+                return {"kind": "instant", "result": dict(cached)}
 
         # Retrieval sees a context-aware query (follow-ups inherit the previous
         # turn's topic, colloquial verbs gain their canonical data nouns);
@@ -476,15 +514,9 @@ class IUGChatbot:
 الهندسة. اعرض بشكل منفصل سعر البكالوريوس وسعر الماجستير/الدراسات العليا إذا
 وُجدا في المقاطع أعلاه. لا تخلط بينهما، ولا تخترع قيمة لم ترد في المقاطع.
 """
-        answer  = self._ask_llm(system, question, session_id)
         source = "student_context_rag" if private_context is not None else "uploaded_files_all"
-        result = {"answer": answer, "top_chunks": relevant_chunks, "source": source}
-        if cacheable:
-            self._answer_cache.set(
-                cache_key,
-                {"answer": answer, "top_chunks": list(relevant_chunks), "source": "uploaded_files_all"},
-            )
-        return result
+        return {"kind": "llm", "system": system, "chunks": relevant_chunks,
+                "source": source, "cache_key": cache_key}
 
     def chat_as_student(self, question: str, student_id: str) -> dict:
         """
@@ -497,29 +529,99 @@ class IUGChatbot:
         (see app.api.deps.get_current_student), never a raw client field — so
         a student can only ever read their OWN profile.
         """
-        # Asking about ANOTHER student's private record → refuse outright.
-        if privacy.asks_about_other_student(question, student_id):
-            self.push_history(student_id, question, privacy.BLOCKED_ANSWER)
-            return {"answer": privacy.BLOCKED_ANSWER, "top_chunks": [], "source": "privacy_block"}
+        verdict, payload = self._student_turn(question, student_id)
+        if verdict == "block":
+            self.push_history(student_id, question, payload)
+            return {"answer": payload, "top_chunks": [], "source": "privacy_block"}
+        return self.chat_with_all_files(question, student_id, **payload)
 
+    def _student_turn(self, question: str, student_id: str):
+        """Shared student setup for both blocking and streaming replies.
+
+        Returns ("block", refusal_text) when the question targets another
+        student's private record, else ("ok", kwargs) with the private profile
+        context, role policy, and major-expanded retrieval query.
+
+        SECURITY: student_id comes from the verified JWT (app.api.deps), never a
+        client field — a student can only ever read their OWN profile."""
+        if privacy.asks_about_other_student(question, student_id):
+            return "block", privacy.BLOCKED_ANSWER
         account = auth.find_account(student_id)
         profile = (account or {}).get("profile") or {}
         private_context = (
-            privacy.format_authenticated_profile_context(profile)
-            if profile
-            else ""
+            privacy.format_authenticated_profile_context(profile) if profile else ""
         )
-        return self.chat_with_all_files(
-            question,
-            student_id,
-            private_context=private_context,
-            role_prompt=prompt_for(Principal(student_id, Role.STUDENT)),
+        return "ok", {
+            "private_context": private_context,
+            "role_prompt": prompt_for(Principal(student_id, Role.STUDENT)),
             # «رئيس قسمي» / «التدريب الميداني» → the search also sees the
             # student's actual major.
-            retrieval_question=query_rewrite.personalize_query(
+            "retrieval_question": query_rewrite.personalize_query(
                 question, profile.get("major")
             ),
+        }
+
+    def stream_answer(self, question: str, principal: Principal, *, allowed_collections):
+        """Streaming twin of chat_as_principal: yields the answer token-by-token.
+
+        Mirrors chat_as_principal EXACTLY — same privacy refusal, same
+        RBAC-filtered `allowed_collections` (so streaming can't reach a
+        collection the blocking path would hide), same private context, same
+        major-expanded retrieval — then streams the LLM content instead of
+        blocking on it. Instant paths (privacy block / trusted fact / structured
+        admission / cache hit) yield their whole answer in one chunk. Once the
+        stream completes it records history (with the reusable question
+        embedding) and fills the cache just like the blocking path, so memory
+        and behavior are identical; only delivery differs.
+
+        Errors after the first byte surface as visible text — the HTTP status
+        was already sent and can no longer become a clean 502."""
+        if principal.role == Role.STUDENT and privacy.asks_about_other_student(
+            question, principal.subject
+        ):
+            self.push_history(principal.subject, question, privacy.BLOCKED_ANSWER)
+            yield privacy.BLOCKED_ANSWER
+            return
+
+        private_context = None
+        retrieval_question = question
+        if principal.role != Role.GUEST:
+            account = auth.find_account(principal.subject)
+            private_context = build_private_context(principal, question, account=account)
+            if principal.role == Role.STUDENT:
+                major = ((account or {}).get("profile") or {}).get("major")
+                retrieval_question = query_rewrite.personalize_query(question, major)
+
+        prepared = self._prepare_all_files(
+            question, principal.subject,
+            private_context=private_context,
+            allowed_collections=allowed_collections,
+            role_prompt=prompt_for(principal),
+            retrieval_question=retrieval_question,
         )
+        if prepared["kind"] == "instant":
+            yield prepared["result"]["answer"]
+            return
+
+        user_message, q_vec = self._build_user_message(question, principal.subject)
+        parts: List[str] = []
+        try:
+            for chunk in stream_completion(prepared["system"], user_message):
+                parts.append(chunk)
+                yield chunk
+        except ChatbotError as exc:
+            yield ("\n\n⚠️ " + exc.message) if parts else ("⚠️ " + exc.message)
+            return
+
+        answer = "".join(parts).strip()
+        if answer:
+            self.push_history(principal.subject, question, answer, embedding=q_vec)
+            if prepared["cache_key"]:
+                self._answer_cache.set(
+                    prepared["cache_key"],
+                    {"answer": answer, "top_chunks": list(prepared["chunks"]),
+                     "source": "uploaded_files_all"},
+                )
 
     def chat_as_principal(
         self,

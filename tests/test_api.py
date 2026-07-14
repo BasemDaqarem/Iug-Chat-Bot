@@ -49,6 +49,13 @@ class FakeBot:
     def chat_with_file(self, question, collection_name, session_id):
         return self._answer(question, session_id, "uploaded_file")
 
+    def stream_answer(self, question, subject, *, allowed_collections=None):
+        # `subject` is a plain student_id here (legacy branch of the route).
+        sid = getattr(subject, "subject", subject)
+        self.history.setdefault(sid, []).append({"user": question, "assistant": "إجابة"})
+        for part in ["إ", "جا", "بة"]:   # three visible chunks
+            yield part
+
     # files ----------------------------------------------------------------
     def get_uploaded_files_list(self):
         return list(self.files.values())
@@ -161,6 +168,18 @@ class TestChat(ApiBase):
         r = self.client.post("/api/chat/student", json={"question": "س"},
                              headers={"Authorization": "Bearer not.a.jwt"})
         self.assertEqual(r.status_code, 401)
+
+    def test_chat_student_stream_requires_token(self):
+        r = self.client.post("/api/chat/student/stream", json={"question": "س"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_chat_student_stream_yields_full_answer(self):
+        r = self.client.post("/api/chat/student/stream", json={"question": "ما حالتي؟"},
+                             headers=self.auth("12345"))
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.headers["content-type"].startswith("text/plain"))
+        self.assertEqual(r.text, "إجابة")            # three chunks reassembled
+        self.assertIn("12345", self.bot.history)     # identity from token
 
     def test_chat_one_file(self):
         r = self.client.post("/api/chat/files/ملف_علامات",
