@@ -53,3 +53,10 @@
 @media (max-width:1000px) { .stats { grid-template-columns:repeat(2,1fr); }.portal-shell { grid-template-columns:220px minmax(0,1fr); }.workspace { padding-inline:24px; } }
 @media (max-width:760px) { .portal-shell { display:block; }.side { position:fixed; inset:0 0 0 auto; width:250px; transform:translateX(105%); transition:.25s; }.side.is-open { transform:none; }.workspace { padding-inline:15px; overflow:hidden; }.view { width:calc(100vw - 30px); max-width:calc(100vw - 30px); min-width:0; }.table-panel,.table-wrap,.filters { width:100%; max-width:100%; }.mobile-only { display:block; }.topbar { height:78px; }.operator div { display:none; }.stats { grid-template-columns:1fr 1fr; }.hero-panel,.section-head { align-items:flex-start; flex-direction:column; }.grid-form { grid-template-columns:1fr; }.grid-form>* { grid-column:1!important; } }
 @media (max-width:470px) { .stats { grid-template-columns:1fr; }.hero-panel { padding:24px; }.section-head h2 { font-size:23px; }.topbar h1 { font-size:19px; } }
+
+/* صلاحيات الملفات: خيار النشر الفوري + تعتيم الأدوار غير المتوافقة مع التصنيف */
+.check-inline { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:#4e5c70; }
+.check-inline input { width:auto; accent-color:var(--gold); }
+.checks label:has(input:disabled) { opacity:.38; }
+.portal-form [data-roles-hint] { color:#8a6d1f; min-height:0; }
+.actions .action.danger { color:#c62828; border-color:rgba(198,40,40,.35); }

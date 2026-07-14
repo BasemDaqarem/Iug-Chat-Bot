@@ -11,6 +11,35 @@
   const roleNames = { guest: "زائر", student: "طالب", employee: "موظف", admin: "أدمن" };
   const classNames = { university_public: "جامعة عام", student_records: "سجلات طلاب", employee_internal: "موظفون داخلي", employee_private: "موظف خاص", admin_only: "أدمن فقط" };
   const statusNames = { draft: "مسودة", ready: "جاهز للنشر", published: "منشور", archived: "مؤرشف" };
+  // مرآة قواعد الخادم (_sanitize_policy): أقصى أدوار يسمح بها كل تصنيف،
+  // والتصنيفات التي تتطلب مالكاً — حتى لا يرتطم الأدمن بأخطاء 400 مفاجئة.
+  const classMaxRoles = {
+    university_public: ["guest", "student", "employee", "admin"],
+    student_records: ["student", "admin"],
+    employee_internal: ["employee", "admin"],
+    employee_private: ["employee", "admin"],
+    admin_only: ["admin"],
+  };
+  const ownerRequired = ["student_records", "employee_private"];
+
+  function syncPolicyControls(form) {
+    const cls = form.elements.classification.value;
+    const allowed = classMaxRoles[cls] || ["admin"];
+    $$("input[name=roles]", form).forEach(box => {
+      const ok = allowed.includes(box.value);
+      box.disabled = !ok;
+      if (!ok) box.checked = false;
+      else if (allowed.length === 1) box.checked = true;
+    });
+    const hint = $("[data-roles-hint]", form);
+    if (hint) hint.textContent = allowed.length < 4 ? `هذا التصنيف يسمح فقط بـ: ${allowed.map(r => roleNames[r]).join("، ")}` : "";
+    const ownerWrap = $("[data-owner-wrap]", form);
+    if (ownerWrap) {
+      const need = ownerRequired.includes(cls);
+      ownerWrap.hidden = !need;
+      ownerWrap.querySelector("input").required = need;
+    }
+  }
 
   async function api(path, options = {}) {
     const headers = { ...(options.headers || {}), Authorization: `Bearer ${session.token}` };
@@ -63,9 +92,13 @@
     if (!files.length) { const tr = el("tr"); const td = el("td", "empty", "لا توجد ملفات مطابقة."); td.colSpan = 6; tr.append(td); body.append(tr); return; }
     files.forEach(file => {
       const tr = el("tr"); const acts = el("div", "actions"); const id = file.file_id;
-      if (!file.legacy && file.status === "draft") acts.append(action("معالجة", "process", id));
-      if (!file.legacy && file.status === "ready") acts.append(action("نشر", "publish", id));
-      if (!file.legacy) acts.append(action("الصلاحيات", "access", id));
+      // كل ملف — حتى القديم السابق للسجل — له إجراءات: الخادم يتبنّاه تلقائياً.
+      if (file.status === "draft") acts.append(action("معالجة ونشر", "process_publish", id));
+      if (file.status === "ready") acts.append(action("نشر", "publish", id));
+      if (file.status !== "archived") {
+        acts.append(action("الصلاحيات", "access", id));
+        acts.append(action("حذف", "delete", id, true));
+      }
       tr.append(cell(fileTitle(file)), cell(el("span", "badge", classNames[file.classification] || file.classification)), cell(`v${file.published_version || file.latest_version || 1}`), cell(statusBadge(file.status)), cell(rolesList(file.allowed_roles)), cell(acts)); body.append(tr);
     });
   }
@@ -79,7 +112,62 @@
   function renderOverview() { $("#statFiles").textContent = state.files.length; $("#statPublished").textContent = state.files.filter(f => f.status === "published").length; $("#statEmployees").textContent = state.employees.length; $("#statAudit").textContent = state.audit.length; const root = $("#recentFiles"); root.replaceChildren(); state.files.slice(0,5).forEach(file => { const item = el("div", "activity__item"); item.append(el("span", "activity__icon", "▤")); const info = el("div"); info.append(el("strong", "", file.name || file.collection), el("small", "", `${classNames[file.classification] || file.classification} · ${statusNames[file.status] || file.status}`)); item.append(info, el("time", "", file.updated_at ? new Date(file.updated_at).toLocaleDateString("ar-EG") : "قديم")); root.append(item); }); if (!root.children.length) root.append(el("div", "empty", "ابدأ برفع أول مسودة معرفة.")); }
 
   $("#fileSearch").addEventListener("input", renderFiles); $("#employeeSearch").addEventListener("input", renderEmployees); $("#refreshAudit").addEventListener("click", loadAudit);
-  $("#filesBody").addEventListener("click", async e => { const b = e.target.closest("[data-action]"); if (!b) return; const file = state.files.find(x => x.file_id === b.dataset.id); if (!file) return; b.disabled = true; try { if (b.dataset.action === "process") await api(`/api/admin/files/${file.file_id}/process`, { method:"POST" }); if (b.dataset.action === "publish") await api(`/api/admin/files/${file.file_id}/publish`, { method:"POST" }); if (b.dataset.action === "access") { const classification = prompt("التصنيف", file.classification); if (!classification) return; const roles = prompt("الأدوار مفصولة بفاصلة", (file.allowed_roles || []).join(",")); if (!roles) return; await api(`/api/admin/files/${file.file_id}/access`, { method:"PATCH", body:JSON.stringify({ classification, allowed_roles:roles.split(",").map(x=>x.trim()).filter(Boolean), owner_id:file.owner_id || null }) }); } toast("تم تحديث الملف بنجاح."); await loadFiles(); await loadAudit(); } catch (err) { toast(err.message, true); } finally { b.disabled = false; } });
+  let accessTarget = null;   // الملف الذي يُحرَّر في accessModal
+  function openAccessModal(file) {
+    accessTarget = file;
+    const form = $("#accessForm");
+    $("#accessTitle").textContent = `صلاحيات: ${file.name || file.collection}`;
+    form.elements.classification.value = file.classification || "university_public";
+    const roles = file.allowed_roles || [];
+    $$("input[name=roles]", form).forEach(box => { box.checked = roles.includes(box.value); });
+    form.elements.owner_id.value = file.owner_id || "";
+    $("[data-msg]", form).textContent = "";
+    syncPolicyControls(form);
+    openModal("accessModal");
+  }
+
+  $("#filesBody").addEventListener("click", async e => {
+    const b = e.target.closest("[data-action]"); if (!b) return;
+    const file = state.files.find(x => x.file_id === b.dataset.id); if (!file) return;
+    if (b.dataset.action === "access") { openAccessModal(file); return; }
+    if (b.dataset.action === "delete" &&
+        !confirm(`سيُحذف «${file.name || file.collection}» نهائياً من المعرفة والبحث.\nهل أنت متأكد؟`)) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.action === "process_publish") {
+        const item = await api(`/api/admin/files/${file.file_id}/process`, { method:"POST" });
+        await api(`/api/admin/files/${item.file_id || file.file_id}/publish`, { method:"POST" });
+        toast("تمت المعالجة والنشر — الملف أصبح متاحاً حسب صلاحياته.");
+      }
+      if (b.dataset.action === "publish") { await api(`/api/admin/files/${file.file_id}/publish`, { method:"POST" }); toast("تم النشر."); }
+      if (b.dataset.action === "delete") { const r = await api(`/api/admin/files/${encodeURIComponent(file.file_id)}`, { method:"DELETE" }); toast(r.message || "تم الحذف."); }
+      await loadFiles(); await loadAudit();
+    } catch (err) { toast(err.message, true); } finally { b.disabled = false; }
+  });
+
+  $("#accessForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!accessTarget) return;
+    const form = e.currentTarget; const msg = $("[data-msg]", form);
+    const button = $("button[type=submit]", form); msg.textContent = "";
+    const roles = $$("input[name=roles]:checked", form).map(x => x.value);
+    if (!roles.length) { msg.textContent = "اختر دوراً واحداً على الأقل."; return; }
+    button.disabled = true;
+    try {
+      await api(`/api/admin/files/${encodeURIComponent(accessTarget.file_id)}/access`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          classification: form.elements.classification.value,
+          allowed_roles: roles,
+          owner_id: form.elements.owner_id.value.trim() || null,
+        }),
+      });
+      closeModal($("#accessModal"));
+      toast("حُدّثت الصلاحيات وسرَت فوراً على البحث.");
+      await loadFiles(); await loadAudit();
+    } catch (err) { msg.textContent = err.message; } finally { button.disabled = false; }
+  });
+  $("#accessForm").elements.classification.addEventListener("change", e => syncPolicyControls(e.target.form));
   $("#employeesBody").addEventListener("click", async e => {
     const b = e.target.closest("[data-action]");
     if (!b) return;
@@ -108,7 +196,43 @@
     }
   });
 
-  $("#fileForm").addEventListener("submit", async e => { e.preventDefault(); const form = e.currentTarget; const f = form.elements; const msg = $("[data-msg]", form); const button = $("button[type=submit]", form); msg.textContent = ""; let documents; try { documents = JSON.parse(f.documents.value); } catch (_) { msg.textContent = "صيغة JSON غير صالحة."; return; } const roles = $$('input[name=roles]:checked', form).map(x => x.value); button.disabled = true; try { await api("/api/admin/files", { method:"POST", body:JSON.stringify({ collection:f.collection.value.trim(), documents, classification:f.classification.value, allowed_roles:roles }) }); form.reset(); closeModal($("#fileModal")); toast("حُفظت المسودة. عالجها ثم انشرها من الجدول."); await loadFiles(); await loadAudit(); showView("files"); } catch (err) { msg.textContent = err.message; } finally { button.disabled = false; } });
+  $("#fileForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const form = e.currentTarget; const f = form.elements;
+    const msg = $("[data-msg]", form); const button = $("button[type=submit]", form);
+    msg.textContent = "";
+    let documents;
+    try { documents = JSON.parse(f.documents.value); }
+    catch (_) { msg.textContent = "صيغة JSON غير صالحة."; return; }
+    const roles = $$('input[name=roles]:checked', form).map(x => x.value);
+    if (!roles.length) { msg.textContent = "اختر دوراً واحداً على الأقل."; return; }
+    const publishNow = f.publish_now.checked;
+    button.disabled = true;
+    button.textContent = publishNow ? "جارٍ الرفع والنشر…" : "جارٍ الحفظ…";
+    try {
+      const item = await api("/api/admin/files", { method:"POST", body:JSON.stringify({
+        collection: f.collection.value.trim(),
+        documents,
+        classification: f.classification.value,
+        allowed_roles: roles,
+        owner_id: f.owner_id.value.trim() || null,
+      }) });
+      if (publishNow) {
+        // معالجة + نشر متتاليان: تُبنى المقاطع والفهرس وتسري الصلاحيات فوراً.
+        await api(`/api/admin/files/${item.file_id}/process`, { method:"POST" });
+        await api(`/api/admin/files/${item.file_id}/publish`, { method:"POST" });
+        toast("رُفع الملف ونُشر — صار ضمن معرفة البوت حسب صلاحياته.");
+      } else {
+        toast("حُفظت المسودة. عالجها ثم انشرها من الجدول.");
+      }
+      form.reset(); syncPolicyControls(form);
+      closeModal($("#fileModal"));
+      await loadFiles(); await loadAudit(); showView("files");
+    } catch (err) { msg.textContent = err.message; }
+    finally { button.disabled = false; button.textContent = "حفظ"; }
+  });
+  $("#fileForm").elements.classification.addEventListener("change", e => syncPolicyControls(e.target.form));
+  syncPolicyControls($("#fileForm"));
   $("#employeeForm").addEventListener("submit", async e => { e.preventDefault(); const form = e.currentTarget; const f = form.elements; const msg = $("[data-msg]", form); const button = $("button[type=submit]", form); msg.textContent = ""; const body = { employee_id:f.employee_id.value.trim(), temporary_password:f.temporary_password.value, name:f.name.value.trim(), department:f.department.value.trim(), job_title:f.job_title.value.trim(), salary:f.salary.value ? Number(f.salary.value) : null, access_groups:f.access_groups.value.split(",").map(x=>x.trim()).filter(Boolean) }; button.disabled = true; try { await api("/api/admin/employees", { method:"POST", body:JSON.stringify(body) }); form.reset(); closeModal($("#employeeModal")); toast("تم إنشاء حساب الموظف بكلمة مرور مؤقتة."); await loadEmployees(); await loadAudit(); showView("employees"); } catch (err) { msg.textContent = err.message; } finally { button.disabled = false; } });
 
   Promise.all([loadIdentity(), loadFiles(), loadEmployees(), loadAudit()]).catch(err => toast(err.message, true));

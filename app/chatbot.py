@@ -6,11 +6,12 @@ this class only orchestrates.
 """
 
 import hashlib
+import re
 from typing import List
 
 import numpy as np
 
-from app import auth, config, embeddings, privacy, query_rewrite
+from app import auth, config, embeddings, file_catalog, privacy, query_rewrite
 from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
 from app.errors import ChatbotError
@@ -165,6 +166,36 @@ class IUGChatbot:
             return self.fmt_history(history), None
         turns = sessions_mod.relevant_turns(history, vec)
         return sessions_mod.format_memory(turns), vec
+
+    _CHUNK_SOURCE_RE = re.compile(r"^\[ملف: (.+?)\]")
+
+    @classmethod
+    def _source_recency_note(cls, chunks: List[str]) -> str:
+        """عند استرجاع مقاطع من أكثر من ملف، نُلحق بالبرومت تواريخ آخر تحديث
+        للمصادر وقاعدة «الأحدث يفوز» — فيُحسم تعارض المعلومات (رسوم قديمة
+        مقابل جديدة) لصالح الملف الأحدث. مصدر واحد ⇒ لا تعارض ⇒ لا إضافة."""
+        names: List[str] = []
+        for chunk in chunks:
+            m = cls._CHUNK_SOURCE_RE.match(chunk)
+            if m and m.group(1) not in names:
+                names.append(m.group(1))
+        if len(names) < 2:
+            return ""
+        dates = file_catalog.recency_map()
+        dated = [(name, (dates.get(name) or "")[:10]) for name in names]
+        if not any(date for _, date in dated):
+            return ""  # لا تواريخ مسجّلة إطلاقاً — لا أساس للتفضيل
+        dated.sort(key=lambda item: item[1], reverse=True)
+        lines = "\n".join(f"- {name}: {date or 'غير معروف'}" for name, date in dated)
+        return f"""
+
+تواريخ آخر تحديث للمصادر المسترجعة (الأحدث أولاً):
+{lines}
+
+⚠️ عند تعارض معلومة (رقم أو رسوم أو شرط) بين مصدرين مما سبق، اعتمد قيمة
+المصدر الأحدث تحديثاً وأشر بإيجاز إلى أنها من النسخة الأحدث. المصدر مجهول
+التاريخ يُعامل كالأقدم.
+"""
 
     @staticmethod
     def _is_generic_engineering_hourly_fee(question: str) -> bool:
@@ -489,6 +520,7 @@ class IUGChatbot:
             )
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
+        system += self._source_recency_note(relevant_chunks)  # «الأحدث يفوز» عند التعارض
         if role_prompt:
             system += "\n\nسياسة الصلاحية الملزمة:\n" + role_prompt
         if private_context is not None:

@@ -148,6 +148,51 @@ def get_file(file_id: str) -> Optional[dict]:
     return _clean_doc(_catalog().find_one({"file_id": str(file_id)}))
 
 
+def find_by_collection(collection: str) -> Optional[dict]:
+    return _clean_doc(_catalog().find_one({"collection": str(collection)}))
+
+
+def adopt_legacy(collection: str, actor_id: str) -> dict:
+    """Bring a pre-catalog (legacy) collection under catalog management so the
+    admin can edit its access or delete it like any managed file. The content
+    is already uploaded/indexed, so it enters as PUBLISHED with the same open
+    policy it effectively had (university_public / all roles)."""
+    existing = find_by_collection(collection)
+    if existing:
+        return existing
+    now = _now()
+    doc = {
+        "file_id": uuid4().hex,
+        "collection": collection,
+        "name": collection,
+        "classification": "university_public",
+        "allowed_roles": sorted(_CLASSIFICATION_MAX_ROLES["university_public"]),
+        "owner_id": None,
+        "status": "published",
+        "latest_version": 1,
+        "published_version": 1,
+        "adopted_legacy": True,
+        "created_at": now,
+        "created_by": actor_id,
+        "updated_at": now,
+        "updated_by": actor_id,
+    }
+    _catalog().insert_one(doc)
+    return _clean_doc(doc)
+
+
+def recency_map() -> dict:
+    """{collection: آخر تحديث ISO} لكل الملفات المسجّلة — تُستخدم لتفضيل الملف
+    الأحدث عند تعارض المعلومات بين مصدرين في الإجابة."""
+    try:
+        return {
+            doc["collection"]: str(doc.get("updated_at") or doc.get("created_at") or "")
+            for doc in _catalog().find({}, {"collection": 1, "updated_at": 1, "created_at": 1})
+        }
+    except Exception:
+        return {}  # بلا تواريخ ⇒ لا تفضيل حداثة، والشات يستمر طبيعياً
+
+
 def list_files(runtime_files: Optional[list[dict]] = None) -> list[dict]:
     managed = [_clean_doc(doc) for doc in _catalog().find({})]
     by_collection = {doc["collection"]: doc for doc in managed if doc}

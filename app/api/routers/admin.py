@@ -88,22 +88,55 @@ def create_file(
     return item
 
 
+def _resolve_managed(file_id: str, actor_id: str) -> dict | None:
+    """Managed catalog entry for the id — adopting pre-catalog files on the
+    fly (ids like «legacy:<collection>») so the admin can manage them too."""
+    if file_id.startswith("legacy:"):
+        return file_catalog.adopt_legacy(file_id.split(":", 1)[1], actor_id)
+    return file_catalog.get_file(file_id)
+
+
 @router.patch("/files/{file_id}/access")
 def patch_file_access(
     file_id: str,
     body: FileAccessUpdateRequest,
     principal: Principal = Depends(require_admin_role),
 ) -> dict:
+    entry = _resolve_managed(file_id, principal.subject)
+    if entry is None:
+        raise NotFoundError("الملف غير موجود.")
     try:
         item = file_catalog.update_access(
-            file_id, body.classification, body.allowed_roles, body.owner_id, principal.subject
+            entry["file_id"], body.classification, body.allowed_roles,
+            body.owner_id, principal.subject,
         )
     except ValueError as exc:
         raise BadRequestError(str(exc))
     if item is None:
         raise NotFoundError("الملف غير موجود.")
-    audit.record(principal.subject, principal.role.value, "file.access", file_id)
+    audit.record(principal.subject, principal.role.value, "file.access", entry["file_id"])
     return item
+
+
+@router.delete("/files/{file_id}")
+def delete_file(
+    file_id: str,
+    principal: Principal = Depends(require_admin_role),
+    bot: IUGChatbot = Depends(get_bot),
+) -> dict:
+    """Remove a file from retrieval entirely: drop its uploaded collection
+    (content + index) and archive its catalog entry. Works for managed and
+    pre-catalog (legacy:*) files alike."""
+    entry = _resolve_managed(file_id, principal.subject)
+    if entry is None:
+        raise NotFoundError("الملف غير موجود.")
+    bot.delete_uploaded_file(entry["collection"])
+    file_catalog.archive(entry["file_id"], principal.subject)
+    audit.record(
+        principal.subject, principal.role.value, "file.delete",
+        entry["file_id"], {"collection": entry["collection"]},
+    )
+    return {"success": True, "message": f"تم حذف «{entry['collection']}» من المعرفة والبحث."}
 
 
 @router.post("/files/{file_id}/process")
