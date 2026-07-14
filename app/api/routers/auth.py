@@ -6,10 +6,16 @@ Thin delegates to app.auth; all failures use the unified error envelope
 """
 
 from fastapi import APIRouter, Depends
+from pymongo.errors import DuplicateKeyError
 
-from app import auth, tokens
+from app import auth, config, tokens
 from app.api.deps import get_current_principal, login_rate_limit
-from app.api.errors import ConflictError, NotFoundError, UnauthorizedError
+from app.api.errors import (
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    UnauthorizedError,
+)
 from app.api.schemas import AuthResponse, ErrorResponse, LoginRequest, RegisterRequest
 from app.rbac import Principal
 
@@ -77,15 +83,25 @@ def me(principal: Principal = Depends(get_current_principal)) -> AuthResponse:
     responses={409: {"model": ErrorResponse, "description": "الرقم الجامعي مسجّل مسبقاً"}},
 )
 def register(body: RegisterRequest) -> AuthResponse:
+    # Production provisions accounts from the enrollment system; the demo lets
+    # anyone self-register. This gate closes anonymous subject-squatting /
+    # account-flood when the deployment turns it off (findings 1 & 6).
+    if not config.ALLOW_PUBLIC_REGISTRATION:
+        raise ForbiddenError("التسجيل الذاتي غير متاح — تُنشأ الحسابات من نظام الجامعة.")
     if auth.find_account(body.student_id) is not None:
         raise ConflictError("هذا الرقم الجامعي مسجّل مسبقاً — سجّل الدخول بدلاً من ذلك.")
-    account = auth.create_account(
-        body.student_id,
-        body.password,
-        body.name,
-        body.major,
-        body.gpa,
-        body.rank,
-        body.academic_status,
-    )
+    try:
+        account = auth.create_account(
+            body.student_id,
+            body.password,
+            body.name,
+            body.major,
+            body.gpa,
+            body.rank,
+            body.academic_status,
+        )
+    except DuplicateKeyError:
+        # Lost the check-then-insert race against a concurrent registration —
+        # the unique index rejected the second insert (finding 9).
+        raise ConflictError("هذا الرقم الجامعي مسجّل مسبقاً — سجّل الدخول بدلاً من ذلك.")
     return _to_response(account)

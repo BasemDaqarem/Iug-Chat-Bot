@@ -17,17 +17,49 @@ from app.rbac import Principal, Role
 
 CATALOG = "file_catalog"
 VERSIONS = "managed_file_versions"
-CLASSIFICATIONS = {
-    "university_public",
-    "student_records",
-    "employee_internal",
-    "employee_private",
-    "admin_only",
+
+# The MAXIMUM roles each classification may ever grant. A file's allowed_roles
+# is intersected with this set, so an over-broad request (e.g. the schema's
+# default "all roles" left on an admin_only file) can never widen access beyond
+# what the classification means. Enforced on BOTH write and read.
+_CLASSIFICATION_MAX_ROLES = {
+    "university_public": {"guest", "student", "employee", "admin"},
+    "student_records":   {"student", "admin"},
+    "employee_internal": {"employee", "admin"},
+    "employee_private":  {"employee", "admin"},
+    "admin_only":        {"admin"},
 }
+CLASSIFICATIONS = set(_CLASSIFICATION_MAX_ROLES)
+
+# Classifications that identify ONE person's record: a non-empty owner_id is
+# mandatory, else the file would be readable by every same-role user.
+_OWNER_REQUIRED = {"student_records", "employee_private"}
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _owner_present(owner_id) -> bool:
+    return bool(owner_id and str(owner_id).strip())
+
+
+def _sanitize_policy(classification: str, allowed_roles: Iterable[str], owner_id) -> list[str]:
+    """Validate a (classification, roles, owner) triple and return the roles
+    actually permitted by the classification. Fails closed on any inconsistency.
+
+    Single source of truth used by create_draft, update_access, publish, and
+    the read-time gate — so a policy that is rejected on write can never slip in
+    through a different path either."""
+    if classification not in CLASSIFICATIONS:
+        raise ValueError("تصنيف الملف غير صالح.")
+    requested = {Role(str(role)).value for role in allowed_roles}
+    roles = sorted(requested & _CLASSIFICATION_MAX_ROLES[classification])
+    if not roles:
+        raise ValueError("الأدوار المحددة غير متوافقة مع تصنيف الملف.")
+    if classification in _OWNER_REQUIRED and not _owner_present(owner_id):
+        raise ValueError("هذا التصنيف خاص بطالب/موظف محدد ويتطلب تحديد صاحبه (owner_id).")
+    return roles
 
 
 def _catalog():
@@ -55,14 +87,10 @@ def create_draft(
     *,
     owner_id: Optional[str] = None,
 ) -> dict:
-    if classification not in CLASSIFICATIONS:
-        raise ValueError("تصنيف الملف غير صالح.")
     docs = documents if isinstance(documents, list) else [documents]
     if not docs or not all(isinstance(item, dict) for item in docs):
         raise ValueError("المحتوى يجب أن يكون JSON object أو قائمة objects غير فارغة.")
-    roles = sorted({Role(str(role)).value for role in allowed_roles})
-    if not roles:
-        raise ValueError("اختر دوراً واحداً على الأقل لقراءة الملف.")
+    roles = _sanitize_policy(classification, allowed_roles, owner_id)
 
     existing = _catalog().find_one({"collection": collection})
     now = _now()
@@ -103,6 +131,12 @@ def create_draft(
         "file_id": file_id,
         "version": version,
         "documents": [dict(item) for item in docs],
+        # Snapshot the access policy WITH the content, so a later rollback to
+        # this version restores its original policy — not whatever the current
+        # (possibly broader) policy happens to be (security report finding 3).
+        "classification": classification,
+        "allowed_roles": roles,
+        "owner_id": owner_id,
         "status": "draft",
         "created_at": now,
         "created_by": actor_id,
@@ -150,9 +184,7 @@ def update_access(
     owner_id: Optional[str],
     actor_id: str,
 ) -> Optional[dict]:
-    if classification not in CLASSIFICATIONS:
-        raise ValueError("تصنيف الملف غير صالح.")
-    roles = sorted({Role(str(role)).value for role in allowed_roles})
+    roles = _sanitize_policy(classification, allowed_roles, owner_id)
     result = _catalog().update_one(
         {"file_id": str(file_id)},
         {"$set": {
@@ -226,6 +258,21 @@ def publish(file_id: str, bot, actor_id: str, version: Optional[int] = None) -> 
         {"file_id": file_id, "version": target},
         {"$set": {"status": "published", "published_at": now, "published_by": actor_id}},
     )
+    # Restore the TARGET version's own access policy alongside its content, so
+    # rolling back to an old version cannot serve its bytes under a newer,
+    # broader policy (finding 3). Versions predating policy snapshots fall back
+    # to the current catalog policy (unchanged behavior, still consistent).
+    policy_set = {}
+    if "classification" in target_doc:
+        policy_set = {
+            "classification": target_doc["classification"],
+            "allowed_roles": _sanitize_policy(
+                target_doc["classification"],
+                target_doc.get("allowed_roles") or [],
+                target_doc.get("owner_id"),
+            ),
+            "owner_id": target_doc.get("owner_id"),
+        }
     _catalog().update_one(
         {"file_id": file_id},
         {"$set": {
@@ -233,6 +280,7 @@ def publish(file_id: str, bot, actor_id: str, version: Optional[int] = None) -> 
             "published_version": target,
             "updated_at": now,
             "updated_by": actor_id,
+            **policy_set,
         }},
     )
     return get_file(file_id)
@@ -266,10 +314,22 @@ def allowed_collections(principal: Principal, available: Iterable[str]) -> set[s
             continue
         if entry.get("status") != "published":
             continue
-        if principal.role.value not in set(entry.get("allowed_roles") or []):
+        classification = entry.get("classification", "university_public")
+        # Re-derive effective roles from the classification at READ time too:
+        # a stored policy that was over-broad (created before this rule, or by a
+        # future bug) can never leak beyond what the classification allows.
+        max_roles = _CLASSIFICATION_MAX_ROLES.get(classification, {"admin"})
+        effective_roles = set(entry.get("allowed_roles") or []) & max_roles
+        if principal.role.value not in effective_roles:
             continue
         owner_id = entry.get("owner_id")
-        if owner_id and principal.role not in {Role.ADMIN} and str(owner_id) != principal.subject:
+        if classification in _OWNER_REQUIRED and not _owner_present(owner_id):
+            # Owner-scoped record with no owner → fail closed for everyone but
+            # admin (who needs to see it to fix the misconfiguration).
+            if principal.role != Role.ADMIN:
+                continue
+        elif _owner_present(owner_id) and principal.role != Role.ADMIN \
+                and str(owner_id) != principal.subject:
             continue
         allowed.add(name)
     return allowed
