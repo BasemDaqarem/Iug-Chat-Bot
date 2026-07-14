@@ -196,6 +196,32 @@ class TestStudentChat(ChatBase):
         self.assertIn("embedding", last_turn)
         self.assertIsInstance(last_turn["embedding"], list)
 
+    def test_stream_answer_streams_content_and_saves_history(self):
+        from app.rbac import Principal, Role
+
+        principal = Principal("12345", Role.STUDENT)
+        with patch.object(config, "CHAT_API_KEY", "test-key"), \
+             patch("app.embeddings.embed_texts", side_effect=fake_embed), \
+             patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[]), \
+             patch("app.chatbot.stream_completion",
+                   side_effect=lambda s, u: iter(["الرسو", "م ", "10 دنانير"])):
+            chunks = list(self.bot.stream_answer(
+                "كم رسوم التأجيل؟", principal, allowed_collections=None))
+
+        self.assertEqual("".join(chunks), "الرسوم 10 دنانير")
+        # the streamed answer is persisted as one history turn
+        self.assertEqual(self.bot.get_history("12345")[-1]["assistant"], "الرسوم 10 دنانير")
+
+    def test_stream_answer_blocks_question_about_other_student(self):
+        from app.rbac import Principal, Role
+        principal = Principal("12345", Role.STUDENT)
+        chunks = list(self.bot.stream_answer(
+            "كم معدل الطالب 67890؟", principal, allowed_collections=None))
+        self.assertEqual(len(self.llm_calls), 0)          # never reached the LLM
+        self.assertIn("خاصة", "".join(chunks))
+
     def test_memory_embedding_failure_falls_back_and_still_answers(self):
         """فشل توليد المتجه لا يكسر الشات: يعود لطيّ آخر الأدوار كما قبل."""
         self.bot.push_history("12345", "سؤال سابق", "جواب سابق")

@@ -13,6 +13,7 @@ the event loop or other requests.
 """
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from uuid import uuid4
 
@@ -63,6 +64,36 @@ def chat_student(
     return ChatResponse(**bot.chat_as_principal(
         body.question, principal, allowed_collections=allowed
     ))
+
+
+@router.post(
+    "/student/stream",
+    summary="محادثة الطالب — بثّ الإجابة كلمة‑كلمة (SSE-style)",
+    description=(
+        "نفس /student تماماً (نفس الترشيح بالصلاحية ونفس الذاكرة والخصوصية) لكن "
+        "يبثّ الإجابة تدريجياً كنصّ عادي بترميز UTF-8 لتجربة أسرع إحساساً. "
+        "الأخطاء قبل أول بايت تُرجَع 401/429 عادية؛ خطأ أثناء البثّ يظهر كنصّ."
+    ),
+)
+def chat_student_stream(
+    body: StudentChatRequest,
+    student_id: str = Depends(rate_limited_student),
+    bot: IUGChatbot = Depends(get_bot),
+) -> StreamingResponse:
+    # Belt-and-braces: tell any proxy NOT to buffer this response either.
+    stream_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+    if not isinstance(bot, IUGChatbot):  # injected test/legacy bot — no Mongo
+        return StreamingResponse(
+            bot.stream_answer(body.question, student_id),
+            media_type="text/plain; charset=utf-8", headers=stream_headers,
+        )
+    principal = Principal(student_id, Role.STUDENT)
+    available = {item["collection"] for item in bot.get_uploaded_files_list()}
+    allowed = file_catalog.allowed_collections(principal, available)
+    return StreamingResponse(
+        bot.stream_answer(body.question, principal, allowed_collections=allowed),
+        media_type="text/plain; charset=utf-8", headers=stream_headers,
+    )
 
 
 @router.post(
