@@ -65,6 +65,7 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
             instance = IUGChatbot()
             instance.initialize()        # Mongo + cached embedding indexes
             app.state.bot = instance
+            auth_service.ensure_indexes()  # unique account identifiers (finding 9)
             auth_service.ensure_bootstrap_admin(
                 config.ADMIN_BOOTSTRAP_ID,
                 config.ADMIN_BOOTSTRAP_PASSWORD,

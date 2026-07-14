@@ -55,6 +55,12 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
 # Empty by default → those endpoints are DENIED until an admin key is set.
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 
+# Public self-registration. True (demo default) lets a student create an
+# account with a self-reported profile. Set FALSE in a real deployment so
+# accounts are provisioned only from the enrollment system — closing anonymous
+# subject squatting / account-flood (see security report findings 1 & 6).
+ALLOW_PUBLIC_REGISTRATION = os.getenv("ALLOW_PUBLIC_REGISTRATION", "true").lower() == "true"
+
 # Optional one-time bootstrap for the first administrator. There is no public
 # admin-registration endpoint. Leave both empty after the account exists.
 ADMIN_BOOTSTRAP_ID = os.getenv("ADMIN_BOOTSTRAP_ID", "")

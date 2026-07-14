@@ -27,6 +27,21 @@ def _col():
     return db.get_collection(COLLECTION)
 
 
+def ensure_indexes() -> None:
+    """Create unique indexes on the account identifiers so two concurrent
+    registrations for the same subject can't both succeed (the check-then-insert
+    race — security report finding 9). The second insert then fails with a
+    DuplicateKeyError, which the router turns into a clean 409.
+
+    `student_id` is sparse because employee/admin accounts don't carry one.
+    Idempotent: safe to call on every startup."""
+    try:
+        _col().create_index("user_id", unique=True, name="uq_user_id")
+        _col().create_index("student_id", unique=True, sparse=True, name="uq_student_id")
+    except Exception as exc:  # index build must never block boot
+        log.warning("تعذّر إنشاء فهارس الحسابات الفريدة: %s", exc)
+
+
 def find_account(student_id: str) -> Optional[dict]:
     identifier = str(student_id)
     account = _col().find_one({"student_id": identifier})
