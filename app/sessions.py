@@ -23,6 +23,14 @@ log = get_logger("sessions")
 
 SESSIONS_COLLECTION = "chat_sessions"
 
+
+def _is_guest(sid) -> bool:
+    """Guest chat mints a fresh `guest:<uuid>` per request (app.rbac.Principal),
+    so the subject is never reused — persisting its history would grow Mongo by
+    one document per anonymous request forever (security report finding 5), for
+    a history that can never be read back. Guests get no server-side history."""
+    return str(sid).startswith("guest:")
+
 # التعليمة المطلوبة قبل بيانات الذاكرة المحقونة (تسبق السياق الرئيسي في الرسالة).
 MEMORY_INSTRUCTION = (
     "قد يكون سؤال المستخدم مرتبطاً ببيانات المحادثة السابقة أدناه. "
@@ -86,9 +94,13 @@ class SessionStore:
         self._max_history = max_history
 
     def get(self, sid: str) -> list:
+        if _is_guest(sid):
+            return []
         return self._sessions.setdefault(sid, [])
 
     def push(self, sid: str, user: str, assistant: str, embedding=None):
+        if _is_guest(sid):
+            return
         h = self.get(sid)
         turn = {"user": user, "assistant": assistant}
         if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
@@ -116,6 +128,8 @@ class MongoSessionStore:
         return db.get_collection(SESSIONS_COLLECTION)
 
     def get(self, sid: str) -> list:
+        if _is_guest(sid):
+            return []
         try:
             doc = self._col().find_one({"_id": str(sid)})
         except Exception as exc:
@@ -124,6 +138,8 @@ class MongoSessionStore:
         return (doc or {}).get("turns", [])
 
     def push(self, sid: str, user: str, assistant: str, embedding=None):
+        if _is_guest(sid):
+            return  # anonymous single-use subject → never persisted
         turn = {"user": user, "assistant": assistant}
         if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
             turn["embedding"] = np.asarray(embedding).ravel().tolist()
