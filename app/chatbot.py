@@ -518,6 +518,22 @@ class IUGChatbot:
             relevant_chunks = self._search_all_for_question(
                 search_question, top_k, allowed_collections
             )
+            # مقارنة معدل الثانوية بمفاتيح القبول سؤال تجميعي: يحتاج جدول
+            # المفاتيح كاملاً لا أقرب مقاطعه فقط. نوجّه حصة استرجاع إضافية
+            # للملفات التي اسمها يدل على القبول/المعدلات (توجيه معتمد على
+            # البيانات — أي ملف يسمّيه الأدمن كذلك يُلتقط تلقائياً).
+            if query_rewrite.has_admission_intent(search_question):
+                names = {f["collection"] for f in self._uploaded.list_files()}
+                if allowed_collections is not None:
+                    names &= set(allowed_collections)
+                focus = {n for n in names
+                         if "قبول" in normalize_arabic(n) or "معدلات" in normalize_arabic(n)}
+                if focus:
+                    focused = self._uploaded.search_all(
+                        search_question, config.TOP_K, allowed_collections=focus
+                    )
+                    seen = set(focused)
+                    relevant_chunks = focused + [c for c in relevant_chunks if c not in seen]
         context = "\n\n---\n\n".join(relevant_chunks)
         system  = UPLOADED_FILE_SYSTEM_PROMPT.format(context=context)
         system += self._source_recency_note(relevant_chunks)  # «الأحدث يفوز» عند التعارض

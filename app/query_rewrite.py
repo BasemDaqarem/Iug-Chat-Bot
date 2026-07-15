@@ -92,7 +92,25 @@ _CANONICAL_TERMS = {
     "تأجيل الدراسة": {"اجل", "اجلت", "باجل", "ناجل", "ياجل", "تاجل", "اجيل"},
     "تسجيل المساقات": {"اسجل", "بسجل", "نسجل", "يسجل", "سجلت"},
     "انسحاب": {"انسحب", "اسحب", "بنسحب", "ينسحب", "انسحبت"},
+    # «أي تخصص يقبلني؟» — سؤال طالب الثانوية عن مفاتيح القبول، لا عن المنح
+    "معدلات القبول": {"يقبلني", "تقبلني", "بقبلني", "بتقبلني", "انقبل", "بنقبل", "قبولي"},
 }
+
+# نية القبول قد تأتي بلا فعل «يقبلني»: «التخصصات المتاحة لمعدلي 85» —
+# اجتماع (معدل + تخصص/كلية) يكفي دليلاً أن المقصود مفاتيح القبول. فحص احتوائي
+# على النص المطبَّع كي تصمد أمام حروف الجر الملتصقة (لمعدلي، بالتخصصات...).
+_GRADE_MARKS = ("معدل",)
+_MAJOR_MARKS = ("تخصص", "كليه", "كليات", "برنامج", "برامج")
+
+
+def has_admission_intent(query: str) -> bool:
+    """«أي التخصصات تقبلني بمعدلي؟» — مقارنة معدل الثانوية بمفاتيح القبول.
+    تحتاج تغطية استرجاع أعرض من المعتاد (كل جدول المفاتيح لا مقطعاً منه)."""
+    norm = normalize_arabic(query)
+    tokens = set(tokenize(query))
+    if tokens & _CANONICAL_TERMS["معدلات القبول"]:
+        return True
+    return any(g in norm for g in _GRADE_MARKS) and any(m in norm for m in _MAJOR_MARKS)
 
 
 def add_canonical_terms(query: str) -> str:
@@ -101,6 +119,10 @@ def add_canonical_terms(query: str) -> str:
         noun for noun, verbs in _CANONICAL_TERMS.items()
         if tokens & verbs and not set(tokenize(noun)) <= tokens
     ]
+    norm = normalize_arabic(query)
+    if has_admission_intent(query) \
+            and "معدلات القبول" not in additions and "معدلات القبول" not in norm:
+        additions.append("معدلات القبول")
     if not additions:
         return query
     return f"{query} ({' ، '.join(additions)})"

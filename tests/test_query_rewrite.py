@@ -94,6 +94,23 @@ class TestAddCanonicalTerms:
         q = "كم سعر ساعة كلية الطب؟"
         assert qr.add_canonical_terms(q) == q
 
+    def test_admission_intent_verb_gains_cutoff_terms(self):
+        """سيناريو الزائر الحرفي: «ما هي التخصصات التي يمكن ان تقبلني اذا معدلي 85%»."""
+        out = qr.add_canonical_terms("ما هي التخصصات التي يمكن ان تقبلني اذا معدلي 85%")
+        assert "معدلات القبول" in out
+
+    def test_admission_intent_pair_without_verb(self):
+        out = qr.add_canonical_terms("شو التخصصات المتاحة لمعدلي 85؟")
+        assert "معدلات القبول" in out
+
+    def test_gpa_question_without_major_context_untouched(self):
+        q = "كم معدلي التراكمي؟"
+        assert qr.add_canonical_terms(q) == q
+
+    def test_explicit_admission_rates_question_not_duplicated(self):
+        q = "ما هي معدلات القبول في التخصصات؟"
+        assert qr.add_canonical_terms(q) == q
+
     def test_composes_with_history_chain(self):
         """سيناريو باسم الحرفي: «كيف اجل الفصل ظ» ثم «كم هيكلف ؟»."""
         history = [{"user": "كيف اجل الفصل ظ", "assistant": "..."}]
