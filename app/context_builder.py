@@ -43,10 +43,19 @@ def build_private_context(principal: Principal, question: str, account: dict | N
         own = {key: profile.get(key) for key in (
             "name", "department", "job_title", "salary", "data_source", "updated_at"
         )}
+        if isinstance(own.get("salary"), (int, float)):
+            # العملة المعتمدة للرواتب — بدونها يخمّن النموذج عملة خاطئة (جنيه!)
+            own["salary"] = f"{own['salary']:g} دينار أردني"
         sections.append("الملف الشخصي والمالي للموظف الحالي فقط:\n" + _json(own))
         if any(term in question for term in ("طالب", "معدل", "ترتيب", "أكاديمي", "تخصص")):
             students = auth.list_students(_student_query(question), limit=10)
             sections.append("سجلات الطلاب الأكاديمية المصرح بها:\n" + _json(students))
+        sections.append(
+            "تعليمات للموظف:\n"
+            "- الرواتب والمبالغ المالية للموظفين تُذكر بالدينار الأردني دائماً.\n"
+            "- إذا طلب البحث عن طالب دون رقم جامعي أو اسم محدد، فلا تعتذر عن غياب "
+            "البيانات — اطلب منه الرقم الجامعي أو الاسم ليكتمل البحث."
+        )
 
     if principal.role == Role.ADMIN:
         if any(term in question for term in ("طالب", "معدل", "ترتيب", "أكاديمي", "تخصص")):

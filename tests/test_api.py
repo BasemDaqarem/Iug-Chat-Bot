@@ -181,6 +181,21 @@ class TestChat(ApiBase):
         self.assertEqual(r.text, "إجابة")            # three chunks reassembled
         self.assertIn("12345", self.bot.history)     # identity from token
 
+    def test_chat_stream_accepts_employee_and_admin_roles(self):
+        """أي سؤال متاح للطالب متاح للموظف والأدمن — كان المسار يرفضهما 403
+        برسالة «هذه العملية متاحة للطلاب فقط»."""
+        from app.rbac import Role
+        from app.tokens import create_access_token
+        for role, subject in ((Role.EMPLOYEE, "EMP-1001"), (Role.ADMIN, "ADMIN-1")):
+            token = create_access_token(subject, role)
+            r = self.client.post(
+                "/api/chat/student/stream", json={"question": "كم سعر الساعة؟"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(r.status_code, 200, f"{role} رُفض!")
+            self.assertEqual(r.text, "إجابة")
+            self.assertIn(subject, self.bot.history)  # سجلّه بهويته هو
+
     def test_chat_one_file(self):
         r = self.client.post("/api/chat/files/ملف_علامات",
                              json={"question": "سؤال؟"}, headers=self.auth("s1"))
