@@ -150,7 +150,7 @@ class IUGChatbot:
         previous turns (semantic short-term memory) before the question, call
         the LLM, record the turn with its reusable embedding."""
         user_message, q_vec = self._build_user_message(question, session_id)
-        answer = chat_completion(system, user_message)
+        answer = self._strip_markdown_tables(chat_completion(system, user_message))
         self.push_history(session_id, question, answer, embedding=q_vec)
         return answer
 
@@ -166,6 +166,40 @@ class IUGChatbot:
             return self.fmt_history(history), None
         turns = sessions_mod.relevant_turns(history, vec)
         return sessions_mod.format_memory(turns), vec
+
+    _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+
+    @classmethod
+    def _strip_markdown_tables(cls, text: str) -> str:
+        """واجهة الشات لا تعرض جداول Markdown فتظهر مشوّهة — أي جدول يفلت من
+        تعليمات البرومت يُحوَّل هنا حتمياً إلى قائمة نقطية (رؤوس الأعمدة تُدمج
+        مع قيم كل صف). تحويل نصي خالص — لا يغيّر أي معلومة."""
+        if "|" not in text:
+            return text
+        lines, out, i = text.split("\n"), [], 0
+        while i < len(lines):
+            if not cls._TABLE_ROW_RE.match(lines[i]):
+                out.append(lines[i]); i += 1; continue
+            rows = []
+            while i < len(lines) and cls._TABLE_ROW_RE.match(lines[i]):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                if not all(set(c) <= set(":- ") for c in cells):   # تجاهل صف الفواصل
+                    rows.append(cells)
+                i += 1
+            if not rows:
+                continue
+            headers, data = rows[0], rows[1:]
+            if not data:                       # جدول بصف واحد → سطر مفرد
+                out.append("- " + " — ".join(c for c in headers if c))
+                continue
+            for row in data:
+                first = row[0] if row else ""
+                rest = "، ".join(
+                    f"{headers[j]}: {row[j]}"
+                    for j in range(1, min(len(headers), len(row))) if row[j]
+                )
+                out.append(f"- **{first}**" + (f" — {rest}" if rest else ""))
+        return "\n".join(out)
 
     _CHUNK_SOURCE_RE = re.compile(r"^\[ملف: (.+?)\]")
 
@@ -189,12 +223,13 @@ class IUGChatbot:
         lines = "\n".join(f"- {name}: {date or 'غير معروف'}" for name, date in dated)
         return f"""
 
-تواريخ آخر تحديث للمصادر المسترجعة (الأحدث أولاً):
+تواريخ إدخال المصادر المسترجعة إلى النظام (الأحدث أولاً):
 {lines}
 
 ⚠️ عند تعارض معلومة (رقم أو رسوم أو شرط) بين مصدرين مما سبق، اعتمد قيمة
-المصدر الأحدث تحديثاً وأشر بإيجاز إلى أنها من النسخة الأحدث. المصدر مجهول
-التاريخ يُعامل كالأقدم.
+المصدر الأحدث إدخالاً. هذه تواريخ إدخال للنظام للترجيح الداخلي فقط — لا
+تذكرها في إجابتك كأنها تاريخ إصدار المعلومة أو «آخر تحديث للنشرة».
+المصدر مجهول التاريخ يُعامل كالأقدم.
 """
 
     @staticmethod
@@ -661,7 +696,9 @@ class IUGChatbot:
             yield ("\n\n⚠️ " + exc.message) if parts else ("⚠️ " + exc.message)
             return
 
-        answer = "".join(parts).strip()
+        # ما بُثّ للعميل يعالجه تحويل الواجهة؛ هنا ننظّف النسخة المحفوظة
+        # (سجل + كاش) من أي جدول كي لا يُعاد تقديمه لاحقاً كما هو.
+        answer = self._strip_markdown_tables("".join(parts).strip())
         if answer:
             self.push_history(principal.subject, question, answer, embedding=q_vec)
             if prepared["cache_key"]:

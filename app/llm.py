@@ -139,16 +139,19 @@ def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
 
             choice = resp.json()["choices"][0]
             content = (choice.get("message") or {}).get("content")
-            if content:
+            truncated = choice.get("finish_reason") == "length"
+            if content and not truncated:
                 return content.strip()
 
-            # Reasoning models can consume the whole token budget on hidden
-            # reasoning and return null/empty content (finish_reason "length").
-            # Retry once with a larger budget before giving up, so a complex
-            # question degrades into a slower answer rather than a hard error.
-            if choice.get("finish_reason") == "length" and attempt < max_retries:
+            # finish_reason == "length" مع محتوى موجود = إجابة مبتورة تنقطع
+            # منتصف كلمة (وصلت الطلابَ فعلاً هكذا) — أعد المحاولة بميزانية
+            # أكبر بدل تسليم نص ناقص. ومع محتوى فارغ = التفكير الخفي التهم
+            # الميزانية كلها؛ نفس العلاج.
+            if truncated and attempt < max_retries:
                 payload = {**payload, "max_tokens": payload.get("max_tokens", 450) * 2}
                 continue
+            if content:
+                return content.strip()  # مبتورة لكن نفدت المحاولات — الأفضل المتاح
             raise UpstreamServiceError(
                 f"❌ {provider} لم يُرجع نصاً للإجابة (استُهلكت ميزانية التوليد على التفكير) "
                 "— جرّب صياغة أبسط أو أقصر للسؤال."

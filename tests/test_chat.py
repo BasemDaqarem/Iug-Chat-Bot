@@ -237,6 +237,37 @@ class TestStudentChat(ChatBase):
         # ولا يُخزَّن متجه لهذا الدور (يُحسب لاحقاً عند أول سؤال ناجح تالٍ)
         self.assertNotIn("embedding", self.bot.get_history("12345")[-1])
 
+    def test_markdown_tables_are_converted_to_lists(self):
+        """واجهة الشات لا تعرض جداول Markdown — تُحوَّل حتمياً لقوائم."""
+        table = ("مقدمة\n"
+                 "| الكلية | السعر | ملاحظة |\n"
+                 "|--------|-------|--------|\n"
+                 "| الطب | 100 دينار | بكالوريوس |\n"
+                 "| الهندسة | 30 دينار | بكالوريوس |\n"
+                 "خاتمة")
+        out = IUGChatbot._strip_markdown_tables(table)
+        self.assertNotIn("|", out)                      # لا أعمدة إطلاقاً
+        self.assertIn("**الطب** — السعر: 100 دينار، ملاحظة: بكالوريوس", out)
+        self.assertIn("**الهندسة** — السعر: 30 دينار", out)
+        self.assertIn("مقدمة", out); self.assertIn("خاتمة", out)
+
+    def test_text_without_tables_passes_through_unchanged(self):
+        text = "سعر الساعة 100 دينار.\n- بند أول\n- بند ثانٍ"
+        self.assertEqual(IUGChatbot._strip_markdown_tables(text), text)
+
+    def test_llm_answer_with_table_reaches_user_as_list(self):
+        """التكامل: جواب النموذج بجدولٍ يصل الطالب قائمةً."""
+        tabled = "| التخصص | الرسوم |\n|---|---|\n| الطب | 100 |"
+        with patch("app.auth.find_account",
+                   return_value={"student_id": "12345", "profile": self.PROFILE}), \
+             patch.object(self.bot, "_search_all_for_question", return_value=[]), \
+             patch("app.llm._post_with_retry", return_value=tabled), \
+             patch.object(config, "CHAT_API_KEY", "k"), \
+             patch("app.embeddings.embed_texts", side_effect=lambda t: __import__("numpy").zeros((len(t), 4))):
+            res = self.bot.chat_as_student("قارن الرسوم بجدول", "12345")
+        self.assertNotIn("|", res["answer"])
+        self.assertIn("الطب", res["answer"])
+
     def test_private_profile_answers_are_never_shared_through_cache(self):
         profiles = {
             "11111": {**self.PROFILE, "name": "الطالب الأول", "gpa": 91.0},

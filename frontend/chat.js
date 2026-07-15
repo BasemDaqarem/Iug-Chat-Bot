@@ -59,8 +59,35 @@
     s = s.replace(/([\w.+-]+@[\w-]+\.[\w.-]+)/g, '<a href="mailto:$1">$1</a>');
     return s;
   }
-  function renderMarkdown(text) {
+  // جداول Markdown لا تُعرض في فقاعات الشات — حوّلها لقائمة نقطية قبل التصيير
+  // (تغطي البثّ الحيّ أيضاً حيث يصل الجدول تدريجياً من النموذج).
+  function tablesToLists(text) {
     const lines = String(text).split("\n");
+    const out = []; let i = 0;
+    const isRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+    while (i < lines.length) {
+      if (!isRow(lines[i])) { out.push(lines[i]); i++; continue; }
+      const rows = [];
+      while (i < lines.length && isRow(lines[i])) {
+        const cells = lines[i].trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+        if (!cells.every(c => /^[:\- ]*$/.test(c))) rows.push(cells);  // تجاهل صف الفواصل
+        i++;
+      }
+      if (!rows.length) continue;
+      const headers = rows[0], data = rows.slice(1);
+      if (!data.length) { out.push("- " + headers.filter(Boolean).join(" — ")); continue; }
+      for (const row of data) {
+        const rest = [];
+        for (let j = 1; j < Math.min(headers.length, row.length); j++)
+          if (row[j]) rest.push(`${headers[j]}: ${row[j]}`);
+        out.push(`- **${row[0] || ""}**` + (rest.length ? ` — ${rest.join("، ")}` : ""));
+      }
+    }
+    return out.join("\n");
+  }
+
+  function renderMarkdown(text) {
+    const lines = tablesToLists(String(text)).split("\n");
     let html = "", listType = null, buf = [];
     const flush = () => {
       if (listType) { html += `<${listType}>${buf.join("")}</${listType}>`; buf = []; listType = null; }
