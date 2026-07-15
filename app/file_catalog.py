@@ -24,7 +24,8 @@ VERSIONS = "managed_file_versions"
 # what the classification means. Enforced on BOTH write and read.
 _CLASSIFICATION_MAX_ROLES = {
     "university_public": {"guest", "student", "employee", "admin"},
-    "student_records":   {"student", "admin"},
+    # الموظف مخوّل قراءة سجلات الطلاب الأكاديمية بحكم عمله (rbac.can_read_student)
+    "student_records":   {"student", "employee", "admin"},
     "employee_internal": {"employee", "admin"},
     "employee_private":  {"employee", "admin"},
     "admin_only":        {"admin"},
@@ -34,6 +35,14 @@ CLASSIFICATIONS = set(_CLASSIFICATION_MAX_ROLES)
 # Classifications that identify ONE person's record: a non-empty owner_id is
 # mandatory, else the file would be readable by every same-role user.
 _OWNER_REQUIRED = {"student_records", "employee_private"}
+
+# Roles that may read an owner-scoped file WITHOUT being its owner — mirrors
+# app.rbac: employees read any student's academic record; only admins read
+# another employee's private record.
+_OWNER_BYPASS = {
+    "student_records":  {Role.ADMIN, Role.EMPLOYEE},
+    "employee_private": {Role.ADMIN},
+}
 
 
 def _now() -> str:
@@ -381,12 +390,13 @@ def allowed_collections(principal: Principal, available: Iterable[str]) -> set[s
         if principal.role.value not in effective_roles:
             continue
         owner_id = entry.get("owner_id")
+        bypass = _OWNER_BYPASS.get(classification, {Role.ADMIN})
         if classification in _OWNER_REQUIRED and not _owner_present(owner_id):
             # Owner-scoped record with no owner → fail closed for everyone but
             # admin (who needs to see it to fix the misconfiguration).
             if principal.role != Role.ADMIN:
                 continue
-        elif _owner_present(owner_id) and principal.role != Role.ADMIN \
+        elif _owner_present(owner_id) and principal.role not in bypass \
                 and str(owner_id) != principal.subject:
             continue
         allowed.add(name)

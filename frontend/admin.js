@@ -15,7 +15,7 @@
   // والتصنيفات التي تتطلب مالكاً — حتى لا يرتطم الأدمن بأخطاء 400 مفاجئة.
   const classMaxRoles = {
     university_public: ["guest", "student", "employee", "admin"],
-    student_records: ["student", "admin"],
+    student_records: ["student", "employee", "admin"],   // الموظف يرى سجلات الطلاب
     employee_internal: ["employee", "admin"],
     employee_private: ["employee", "admin"],
     admin_only: ["admin"],

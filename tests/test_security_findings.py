@@ -83,6 +83,36 @@ class TestClassificationAndOwnerPolicy(unittest.TestCase):
         self.assertEqual(file_catalog.allowed_collections(owner, {"rec"}), {"rec"})
         self.assertEqual(file_catalog.allowed_collections(other, {"rec"}), set())
 
+    @patch("app.file_catalog._catalog")
+    def test_employee_reads_student_records_regardless_of_owner(self, catalog):
+        """الموظف مخوّل قراءة سجلات الطلاب بحكم عمله (مرآة rbac.can_read_student)
+        — ملكية السجل لطالب معيّن لا تحجبه عنه."""
+        catalog.return_value.find.return_value = [{
+            "collection": "rec", "status": "published",
+            "classification": "student_records",
+            "allowed_roles": ["student", "employee", "admin"],
+            "owner_id": "12345",
+        }]
+        employee = Principal("EMP-1001", Role.EMPLOYEE)
+        self.assertEqual(file_catalog.allowed_collections(employee, {"rec"}), {"rec"})
+
+    @patch("app.file_catalog._catalog")
+    def test_employee_still_blocked_from_another_employees_private_file(self, catalog):
+        catalog.return_value.find.return_value = [{
+            "collection": "pay", "status": "published",
+            "classification": "employee_private",
+            "allowed_roles": ["employee", "admin"],
+            "owner_id": "EMP-2002",
+        }]
+        other_emp = Principal("EMP-1001", Role.EMPLOYEE)
+        self.assertEqual(file_catalog.allowed_collections(other_emp, {"pay"}), set())
+
+    def test_sanitize_allows_employee_on_student_records(self):
+        roles = file_catalog._sanitize_policy(
+            "student_records", ["student", "employee", "admin"], "12345"
+        )
+        self.assertEqual(roles, ["admin", "employee", "student"])
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Finding 3 — version stores its own policy; rollback restores it
