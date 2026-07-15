@@ -112,6 +112,12 @@
   function renderOverview() { $("#statFiles").textContent = state.files.length; $("#statPublished").textContent = state.files.filter(f => f.status === "published").length; $("#statEmployees").textContent = state.employees.length; $("#statAudit").textContent = state.audit.length; const root = $("#recentFiles"); root.replaceChildren(); state.files.slice(0,5).forEach(file => { const item = el("div", "activity__item"); item.append(el("span", "activity__icon", "▤")); const info = el("div"); info.append(el("strong", "", file.name || file.collection), el("small", "", `${classNames[file.classification] || file.classification} · ${statusNames[file.status] || file.status}`)); item.append(info, el("time", "", file.updated_at ? new Date(file.updated_at).toLocaleDateString("ar-EG") : "قديم")); root.append(item); }); if (!root.children.length) root.append(el("div", "empty", "ابدأ برفع أول مسودة معرفة.")); }
 
   $("#fileSearch").addEventListener("input", renderFiles); $("#employeeSearch").addEventListener("input", renderEmployees); $("#refreshAudit").addEventListener("click", loadAudit);
+  $("#adoptAll").addEventListener("click", async e => {
+    const b = e.currentTarget; b.disabled = true;
+    try { const r = await api("/api/admin/files/adopt-all", { method: "POST" });
+      toast(r.message); await loadFiles(); await loadAudit();
+    } catch (err) { toast(err.message, true); } finally { b.disabled = false; }
+  });
   let accessTarget = null;   // الملف الذي يُحرَّر في accessModal
   function openAccessModal(file) {
     accessTarget = file;

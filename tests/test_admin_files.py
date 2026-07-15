@@ -72,6 +72,33 @@ class TestAdminFileActions(unittest.TestCase):
         adopt.assert_called_once()
         self.assertEqual(upd.call_args[0][0], "auto2")   # عُدّل السجل المتبنّى
 
+    def test_adopt_all_brings_uncatalogued_files_under_management(self):
+        """التسوية الجماعية: الملفات القديمة تدخل السجل بضغطة — الشرط المسبق
+        لإطفاء LEGACY_UNCATALOGUED_FILES_PUBLIC في الإنتاج بلا اختفاء ملفات."""
+        with patch("app.file_catalog.find_by_collection", return_value=None), \
+             patch("app.file_catalog.adopt_legacy") as adopt, \
+             patch("app.audit.record"):
+            r = self.client.post("/api/admin/files/adopt-all", headers=_admin_headers())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["count"], 1)                  # FakeBot فيه ملف واحد
+        adopt.assert_called_once_with("ملف_علامات", "ADMIN-1")
+
+    def test_adopt_all_skips_already_catalogued(self):
+        with patch("app.file_catalog.find_by_collection", return_value={"file_id": "x"}), \
+             patch("app.file_catalog.adopt_legacy") as adopt, \
+             patch("app.audit.record"):
+            r = self.client.post("/api/admin/files/adopt-all", headers=_admin_headers())
+        self.assertEqual(r.json()["count"], 0)
+        adopt.assert_not_called()
+
+    def test_adopt_all_requires_admin(self):
+        from app.rbac import Role
+        from app.tokens import create_access_token
+        token = create_access_token("12345", Role.STUDENT)
+        r = self.client.post("/api/admin/files/adopt-all",
+                             headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r.status_code, 403)
+
     def test_missing_file_is_404(self):
         with patch("app.file_catalog.get_file", return_value=None):
             r = self.client.delete("/api/admin/files/ghost", headers=_admin_headers())

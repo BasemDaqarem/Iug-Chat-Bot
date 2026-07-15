@@ -96,6 +96,23 @@ def _resolve_managed(file_id: str, actor_id: str) -> dict | None:
     return file_catalog.get_file(file_id)
 
 
+@router.post("/files/adopt-all")
+def adopt_all_files(
+    principal: Principal = Depends(require_admin_role),
+    bot: IUGChatbot = Depends(get_bot),
+) -> dict:
+    """تسوية جماعية: كل ملف قديم بلا سجل صلاحيات يدخل السجل (منشور/جامعة عام)
+    بضغطة واحدة — بعدها يضيّق الأدمن أدوار كل ملف، ويُطفأ متغير
+    LEGACY_UNCATALOGUED_FILES_PUBLIC في الإنتاج بلا اختفاء أي ملف."""
+    names = {f["collection"] for f in bot.get_uploaded_files_list()}
+    adopted = file_catalog.adopt_all(names, principal.subject)
+    audit.record(principal.subject, principal.role.value, "file.adopt_all", "*",
+                 {"count": len(adopted)})
+    return {"success": True, "count": len(adopted), "adopted": adopted,
+            "message": (f"استُورد {len(adopted)} ملفاً قديماً إلى سجل الصلاحيات."
+                        if adopted else "كل الملفات مسجّلة أصلاً — لا شيء لاستيراده.")}
+
+
 @router.patch("/files/{file_id}/access")
 def patch_file_access(
     file_id: str,

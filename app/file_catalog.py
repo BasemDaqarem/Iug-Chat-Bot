@@ -190,6 +190,20 @@ def adopt_legacy(collection: str, actor_id: str) -> dict:
     return _clean_doc(doc)
 
 
+def adopt_all(available, actor_id: str) -> list:
+    """Bring EVERY uncatalogued (pre-catalog) collection under management in
+    one shot — the migration step that lets a deployment turn
+    LEGACY_UNCATALOGUED_FILES_PUBLIC off without files vanishing. Each file
+    enters published/university_public (its effective visibility today), then
+    the admin narrows roles per file as needed."""
+    adopted = []
+    for name in sorted({str(n) for n in available}):
+        if find_by_collection(name) is None:
+            adopt_legacy(name, actor_id)
+            adopted.append(name)
+    return adopted
+
+
 def recency_map() -> dict:
     """{collection: آخر تحديث ISO} لكل الملفات المسجّلة — تُستخدم لتفضيل الملف
     الأحدث عند تعارض المعلومات بين مصدرين في الإجابة."""
