@@ -130,13 +130,15 @@ def delete_file(
     entry = _resolve_managed(file_id, principal.subject)
     if entry is None:
         raise NotFoundError("الملف غير موجود.")
-    bot.delete_uploaded_file(entry["collection"])
+    bot.delete_uploaded_file(entry["collection"])       # المحتوى + الفهارس + المتجهات المخزّنة
+    purged = file_catalog.purge_versions(entry["file_id"])  # نصوص كل النسخ المحفوظة
     file_catalog.archive(entry["file_id"], principal.subject)
     audit.record(
         principal.subject, principal.role.value, "file.delete",
-        entry["file_id"], {"collection": entry["collection"]},
+        entry["file_id"], {"collection": entry["collection"], "versions_purged": purged},
     )
-    return {"success": True, "message": f"تم حذف «{entry['collection']}» من المعرفة والبحث."}
+    return {"success": True,
+            "message": f"تم حذف «{entry['collection']}» نهائياً: المحتوى والفهارس والمتجهات وكل النسخ المحفوظة."}
 
 
 @router.post("/files/{file_id}/process")

@@ -25,6 +25,13 @@ from app.retrieval import hybrid_rank
 log = get_logger("uploaded_files")
 
 
+def _index_name(collection_name: str) -> str:
+    """The ONE key an uploaded file's persisted embedding index lives under
+    (disk and Mongo). Build and delete must both use it — a bare name here
+    once left orphaned embeddings behind after file deletion."""
+    return f"uploaded::{collection_name}"
+
+
 class UploadedFilesStore:
 
     def __init__(self):
@@ -104,7 +111,7 @@ class UploadedFilesStore:
         self._chunk_doc_indexes[collection_name] = doc_indexes
         try:
             self._indexes[collection_name] = index_store.build_or_load(
-                f"uploaded::{collection_name}", chunks, build_index
+                _index_name(collection_name), chunks, build_index
             )
             log.info("✅ Indexed uploaded file '%s' (%d chunks).", collection_name, len(chunks))
         except Exception as exc:
@@ -143,6 +150,9 @@ class UploadedFilesStore:
         self._chunk_doc_indexes.pop(collection_name, None)
         self._admissions.remove_collection(collection_name, rebuild=False)
         self._rebuild_admissions()
+        # المتجهات المخزّنة دائمياً (قرص/Mongo) تُحذف مع مصدرها — لا يتيمة تبقى.
+        # (بنفس الاسم المسبوق الذي خُزّنت به — الاسم المجرد كان يحذف مفتاحاً خاطئاً)
+        index_store.delete(_index_name(collection_name))
         return True
 
     def reload(self, collection_name: str) -> bool:

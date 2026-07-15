@@ -33,10 +33,16 @@ def ensure_indexes() -> None:
     race — security report finding 9). The second insert then fails with a
     DuplicateKeyError, which the router turns into a clean 409.
 
-    `student_id` is sparse because employee/admin accounts don't carry one.
-    Idempotent: safe to call on every startup."""
+    Legacy student docs (pre-RBAC) carry student_id but no user_id, which made
+    a unique user_id index fail with `dup key: {user_id: null}` on the live DB
+    — so we first backfill user_id from student_id, then build. Both indexes
+    are sparse to tolerate any remaining shapes. Idempotent on every startup."""
     try:
-        _col().create_index("user_id", unique=True, name="uq_user_id")
+        _col().update_many(
+            {"user_id": {"$in": [None, ""]}, "student_id": {"$nin": [None, ""]}},
+            [{"$set": {"user_id": "$student_id"}}],
+        )
+        _col().create_index("user_id", unique=True, sparse=True, name="uq_user_id")
         _col().create_index("student_id", unique=True, sparse=True, name="uq_student_id")
     except Exception as exc:  # index build must never block boot
         log.warning("تعذّر إنشاء فهارس الحسابات الفريدة: %s", exc)

@@ -127,6 +127,23 @@ def save(name: str, chunks: List[str], index: np.ndarray, model: str) -> None:
         log.warning("⚠️  تعذّر حفظ فهرس '%s' (%s): %s", name, config.INDEX_BACKEND, exc)
 
 
+def delete(name: str) -> None:
+    """Purge `name`'s persisted index from BOTH backends — called when its
+    source file is deleted, so no orphaned embedding blob outlives the content
+    (storage leak + a lingering vector representation of deleted data)."""
+    npy, meta = _disk_paths(name)
+    for path in (npy, meta):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError as exc:
+            log.warning("⚠️  تعذّر حذف ملف فهرس '%s': %s", path, exc)
+    try:
+        _index_col().delete_one({"_id": name})
+    except Exception as exc:
+        log.warning("⚠️  تعذّر حذف فهرس '%s' من Mongo: %s", name, exc)
+
+
 def build_or_load(name: str, chunks: List[str], build_fn) -> np.ndarray:
     """Load `name`'s index from the configured backend, or build it via
     build_fn(chunks) (the expensive embeddings call) and persist the result."""

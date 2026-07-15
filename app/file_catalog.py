@@ -331,6 +331,19 @@ def publish(file_id: str, bot, actor_id: str, version: Optional[int] = None) -> 
     return get_file(file_id)
 
 
+def purge_versions(file_id: str) -> int:
+    """Delete ALL stored version documents (the raw file content) for a
+    deleted file. An admin deleting a file expects its content gone — keeping
+    full document bodies in `managed_file_versions` would silently retain
+    (possibly sensitive) data forever. The catalog entry itself stays as an
+    archived tombstone (metadata only) and the audit log records the act."""
+    try:
+        result = _versions().delete_many({"file_id": str(file_id)})
+        return int(getattr(result, "deleted_count", 0))
+    except Exception:
+        return 0
+
+
 def archive(file_id: str, actor_id: str) -> Optional[dict]:
     result = _catalog().update_one(
         {"file_id": str(file_id)},

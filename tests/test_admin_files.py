@@ -31,16 +31,19 @@ class TestAdminFileActions(unittest.TestCase):
         entry = {"file_id": "f1", "collection": "ملف_علامات"}
         with patch("app.file_catalog.get_file", return_value=entry), \
              patch("app.file_catalog.archive") as archive, \
+             patch("app.file_catalog.purge_versions", return_value=2) as purge, \
              patch("app.audit.record"):
             r = self.client.delete("/api/admin/files/f1", headers=_admin_headers())
         self.assertEqual(r.status_code, 200)
         self.assertNotIn("ملف_علامات", self.bot.files)      # حُذف من المحتوى/الفهرس
         archive.assert_called_once()
+        purge.assert_called_once_with("f1")                 # نصوص النسخ حُذفت أيضاً
 
     def test_delete_legacy_file_adopts_then_deletes(self):
         adopted = {"file_id": "auto1", "collection": "ملف_علامات"}
         with patch("app.file_catalog.adopt_legacy", return_value=adopted) as adopt, \
              patch("app.file_catalog.archive") as archive, \
+             patch("app.file_catalog.purge_versions", return_value=0), \
              patch("app.audit.record"):
             r = self.client.delete(
                 "/api/admin/files/legacy:ملف_علامات", headers=_admin_headers()
@@ -73,6 +76,57 @@ class TestAdminFileActions(unittest.TestCase):
         with patch("app.file_catalog.get_file", return_value=None):
             r = self.client.delete("/api/admin/files/ghost", headers=_admin_headers())
         self.assertEqual(r.status_code, 404)
+
+
+class TestDeleteLeavesNoOrphans(unittest.TestCase):
+    """حذف الملف يجب أن يمحو كل تبعاته: المتجهات المخزّنة (قرص وMongo)
+    ونصوص النسخ — لا يتيمة تبقى بعد الحذف."""
+
+    def test_index_store_delete_removes_disk_files(self):
+        import os, tempfile
+        import numpy as np
+        from app import config, index_store
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(config, "INDEX_CACHE_DIR", tmp), \
+             patch.object(index_store, "_index_col") as col:
+            index_store._disk_save("ملف_تجريبي", ["مقطع"], np.zeros((1, 4)), "m")
+            npy, meta = index_store._disk_paths("ملف_تجريبي")
+            assert os.path.exists(npy) and os.path.exists(meta)
+            index_store.delete("ملف_تجريبي")
+            self.assertFalse(os.path.exists(npy))            # القرص نظيف
+            self.assertFalse(os.path.exists(meta))
+            col.return_value.delete_one.assert_called_once_with({"_id": "ملف_تجريبي"})  # وMongo
+
+    def test_uploaded_store_delete_purges_persisted_index(self):
+        from app.uploaded_files import UploadedFilesStore
+        store = UploadedFilesStore()
+        store._chunks["ملف"] = ["c"]
+        with patch("app.uploaded_files.drop_uploaded_collection"), \
+             patch("app.uploaded_files.index_store.delete") as purge:
+            store.delete("ملف")
+        # بنفس المفتاح المسبوق الذي خُزّن به — الاسم المجرد ترك يتيمة سابقاً
+        purge.assert_called_once_with("uploaded::ملف")
+        self.assertNotIn("ملف", store._chunks)
+
+    def test_ensure_indexes_backfills_legacy_user_id_first(self):
+        """حسابات قديمة بلا user_id أفشلت بناء الفهرس الفريد على القاعدة الحية
+        (dup key: user_id null) — يجب التعبئة من student_id قبل البناء."""
+        from app import auth
+        col = unittest.mock.MagicMock()
+        with patch.object(auth, "_col", return_value=col):
+            auth.ensure_indexes()
+        col.update_many.assert_called_once()          # backfill أولاً
+        kwargs = {c.args[0]: c.kwargs for c in col.create_index.call_args_list}
+        self.assertTrue(kwargs["user_id"]["unique"] and kwargs["user_id"]["sparse"])
+
+    def test_purge_versions_deletes_all_version_docs(self):
+        from app import file_catalog
+        col = unittest.mock.MagicMock()
+        col.delete_many.return_value.deleted_count = 3
+        with patch("app.file_catalog._versions", return_value=col):
+            n = file_catalog.purge_versions("f9")
+        self.assertEqual(n, 3)
+        col.delete_many.assert_called_once_with({"file_id": "f9"})
 
 
 class TestSourceRecencyNote(unittest.TestCase):
