@@ -11,6 +11,7 @@ clear / format_for_prompt):
 make_session_store() picks one from config.SESSION_BACKEND.
 """
 
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -36,6 +37,16 @@ MEMORY_INSTRUCTION = (
     "قد يكون سؤال المستخدم مرتبطاً ببيانات المحادثة السابقة أدناه. "
     "راجعها أولاً واستخدمها فقط عند وجود صلة، ثم تابع إلى السياق الرئيسي."
 )
+
+
+def is_fresh(turn: dict) -> bool:
+    """هل هذا الدور من الجلسة الجارية (خلال MEMORY_FRESH_MINUTES)؟
+    الأدوار القديمة المخزّنة قبل إضافة الطابع الزمني بلا «at» ⇒ قديمة —
+    وهذا بالضبط ما يمنع «أذكرهم» اليوم من وراثة موضوع الأمس."""
+    at = turn.get("at")
+    if not isinstance(at, (int, float)):
+        return False
+    return (time.time() - at) <= config.MEMORY_FRESH_MINUTES * 60
 
 
 def _format_for_prompt(history: list) -> str:
@@ -65,14 +76,19 @@ def relevant_turns(
         min_sim = config.MEMORY_MIN_SIM
     q = np.asarray(query_vec).ravel()
 
+    # الدور الأخير يُحقن بلا شرط فقط إن كان من الجلسة الجارية (طازجاً)؛
+    # القديم يخضع لبوابة التشابه كغيره — فلا يفرض موضوع الأمس على سؤال اليوم.
+    last_is_fresh = is_fresh(history[-1])
+    pool = history[:-1] if last_is_fresh else history
     selected = []
-    for turn in history[:-1]:
+    for turn in pool:
         stored = turn.get("embedding")
         if not stored:
             continue
         if float(np.dot(np.asarray(stored, dtype=np.float32), q)) >= min_sim:
             selected.append(turn)
-    selected.append(history[-1])
+    if last_is_fresh:
+        selected.append(history[-1])
     return selected
 
 
@@ -102,7 +118,7 @@ class SessionStore:
         if _is_guest(sid):
             return
         h = self.get(sid)
-        turn = {"user": user, "assistant": assistant}
+        turn = {"user": user, "assistant": assistant, "at": time.time()}
         if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
             turn["embedding"] = np.asarray(embedding).ravel().tolist()
         h.append(turn)
@@ -140,7 +156,7 @@ class MongoSessionStore:
     def push(self, sid: str, user: str, assistant: str, embedding=None):
         if _is_guest(sid):
             return  # anonymous single-use subject → never persisted
-        turn = {"user": user, "assistant": assistant}
+        turn = {"user": user, "assistant": assistant, "at": time.time()}
         if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
             turn["embedding"] = np.asarray(embedding).ravel().tolist()
         try:

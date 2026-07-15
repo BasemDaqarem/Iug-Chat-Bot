@@ -16,6 +16,7 @@ the LLM (and stored in history) stays exactly what the student typed.
 import re
 from typing import Optional
 
+from app.sessions import is_fresh
 from app.text_norm import normalize_arabic, tokenize
 
 # ── 1. self-references → student profile ─────────────────────────────────────
@@ -135,6 +136,8 @@ _ANAPHORA_TOKENS = {
     "نفس", "المذكور", "السابق", "سابقا",                # same/aforementioned
     "اقصد", "قصدي", "قصدت", "يعني",                     # "I mean …" repairs
     "كمان", "ايضا", "برضه", "برضو",                     # "also …" continuations
+    "اذكرهم", "اذكرها", "اذكرهما", "عددهم", "عدديهم",   # «اذكرهم/عدّدهم» — enumerate-them
+    "سمهم", "سميهم", "وضحهم", "اشرحهم",                 # (المفعول ضمير عائد على السابق)
 }
 # A follow-up is usually VERY short («كم هيكلفني؟», «وللماجستير؟»); at 4+
 # tokens questions usually carry their own topic and prepending the previous
@@ -159,14 +162,20 @@ def with_history_context(question: str, history: list) -> str:
 
     Chain hop: when the previous turn is ITSELF a vague follow-up («كم
     هيكلفني؟» then «وشو الشروط؟»), it carries no topic words — climb one more
-    step to the turn before it so the anchoring topic survives the chain."""
+    step to the turn before it so the anchoring topic survives the chain.
+
+    Freshness gate: chaining happens ONLY onto a turn from the CURRENT sitting
+    (is_fresh) — the history is persistent across days, and without this gate
+    today's «أذكرهم» inherited yesterday's department-heads topic."""
     if not history or not needs_history_context(question):
         return question
+    if not is_fresh(history[-1]):
+        return question  # آخر دور من جلسة قديمة — لا وراثة موضوع
     last_user = str(history[-1].get("user") or "").strip()
     if not last_user:
         return question
     parts = [last_user]
-    if needs_history_context(last_user) and len(history) >= 2:
+    if needs_history_context(last_user) and len(history) >= 2 and is_fresh(history[-2]):
         anchor = str(history[-2].get("user") or "").strip()
         if anchor:
             parts.insert(0, anchor)

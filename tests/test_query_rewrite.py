@@ -1,7 +1,12 @@
 """query_rewrite — retrieval-query expansion is pure string logic, so every
 behavior is unit-testable without any network or Mongo."""
 
+import time
+
 from app import query_rewrite as qr
+
+NOW = {"at": time.time()}          # دور طازج (الجلسة الجارية)
+STALE = {"at": time.time() - 7200}  # دور قديم (قبل ساعتين)
 
 
 class TestExpandSelfReferences:
@@ -113,7 +118,7 @@ class TestAddCanonicalTerms:
 
     def test_composes_with_history_chain(self):
         """سيناريو باسم الحرفي: «كيف اجل الفصل ظ» ثم «كم هيكلف ؟»."""
-        history = [{"user": "كيف اجل الفصل ظ", "assistant": "..."}]
+        history = [{"user": "كيف اجل الفصل ظ", "assistant": "...", **NOW}]
         combined = qr.with_history_context("كم هيكلف ؟", history)
         out = qr.add_canonical_terms(combined)
         assert "تأجيل الدراسة" in out   # المصطلح القانوني وصل للبحث
@@ -144,8 +149,8 @@ class TestNeedsHistoryContext:
 
 class TestWithHistoryContext:
     HISTORY = [
-        {"user": "ما معدل القبول في الهندسة؟", "assistant": "80%"},
-        {"user": "كيف بدي اجل الفصل الحالي", "assistant": "تقدم بطلب لمكتب التسجيل."},
+        {"user": "ما معدل القبول في الهندسة؟", "assistant": "80%", **NOW},
+        {"user": "كيف بدي اجل الفصل الحالي", "assistant": "تقدم بطلب لمكتب التسجيل.", **NOW},
     ]
 
     def test_follow_up_inherits_last_user_turn(self):
@@ -167,13 +172,39 @@ class TestWithHistoryContext:
 
     def test_empty_last_user_turn_untouched(self):
         q = "كم رسومه؟"
-        assert qr.with_history_context(q, [{"user": "", "assistant": "x"}]) == q
+        assert qr.with_history_context(q, [{"user": "", "assistant": "x", **NOW}]) == q
+
+    def test_stale_last_turn_is_never_chained(self):
+        """سيناريو باسم الحرفي: سجل الأمس عن رؤساء الأقسام + «أذكرهم» اليوم —
+        يجب ألا يرث موضوع الأمس (كان يبني: رئيس قسم التمريض — أذكرهم!)."""
+        stale_hist = [{"user": "كيف اتواصل مع رئيس قسم التمريض؟",
+                       "assistant": "wabeid@...", **STALE}]
+        assert qr.with_history_context("أذكرهم", stale_hist) == "أذكرهم"
+
+    def test_legacy_turn_without_timestamp_treated_as_stale(self):
+        old = [{"user": "كيف اتواصل مع رئيس قسم التمريض؟", "assistant": "..."}]
+        assert qr.with_history_context("أذكرهم", old) == "أذكرهم"
+
+    def test_othkorhom_chains_onto_fresh_colleges_question(self):
+        fresh = [{"user": "كم كلية تضم الجامعة الإسلامية؟",
+                  "assistant": "11 كلية.", **NOW}]
+        out = qr.with_history_context("أذكرهم", fresh)
+        assert "كم كلية تضم" in out and "أذكرهم" in out
+
+    def test_chain_hop_requires_fresh_anchor_too(self):
+        history = [
+            {"user": "كيف أقدم طلب تأجيل الفصل؟", "assistant": "...", **STALE},
+            {"user": "كم هيكلفني؟", "assistant": "10", **NOW},
+        ]
+        out = qr.with_history_context("وشو الشروط؟", history)
+        assert "كم هيكلفني" in out          # الطازج يُسلسل
+        assert "تأجيل الفصل" not in out     # الراسي القديم لا يُورَّث
 
     def test_vague_chain_climbs_to_topic_anchor(self):
         """«كم هيكلفني؟» ثم «وشو الشروط؟» — السابق مبهم بدوره فيُلتقط الراسي قبله."""
         history = [
-            {"user": "كيف أقدم طلب تأجيل الفصل الدراسي؟", "assistant": "..."},
-            {"user": "كم هيكلفني؟", "assistant": "10 دنانير"},
+            {"user": "كيف أقدم طلب تأجيل الفصل الدراسي؟", "assistant": "...", **NOW},
+            {"user": "كم هيكلفني؟", "assistant": "10 دنانير", **NOW},
         ]
         out = qr.with_history_context("وشو الشروط؟", history)
         assert "تأجيل الفصل" in out      # الموضوع الراسي نجا من السلسلة
@@ -182,8 +213,8 @@ class TestWithHistoryContext:
 
     def test_chain_does_not_climb_past_topical_turn(self):
         history = [
-            {"user": "ما هي المنح المتاحة؟", "assistant": "..."},
-            {"user": "كيف أقدم طلب تأجيل الفصل الدراسي؟", "assistant": "..."},
+            {"user": "ما هي المنح المتاحة؟", "assistant": "...", **NOW},
+            {"user": "كيف أقدم طلب تأجيل الفصل الدراسي؟", "assistant": "...", **NOW},
         ]
         out = qr.with_history_context("كم هيكلفني؟", history)
         assert "تأجيل الفصل" in out

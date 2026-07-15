@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import time
+
 import numpy as np
 
 from app.sessions import (
@@ -22,7 +24,9 @@ class TestSessionStore(unittest.TestCase):
     def test_push_and_get(self):
         s = SessionStore()
         s.push("sid", "سؤال", "جواب")
-        self.assertEqual(s.get("sid"), [{"user": "سؤال", "assistant": "جواب"}])
+        turn = s.get("sid")[0]
+        self.assertEqual((turn["user"], turn["assistant"]), ("سؤال", "جواب"))
+        self.assertIn("at", turn)  # طابع زمني للنضارة
 
     def test_trims_to_max_history(self):
         s = SessionStore(max_history=20)
@@ -90,9 +94,9 @@ class TestSemanticMemory(unittest.TestCase):
 
     def test_relevance_selection_keeps_only_related_older_turns(self):
         history = [
-            {"user": "سؤال تأجيل", "assistant": "a", "embedding": _vec(1, 0).tolist()},
-            {"user": "سؤال منح", "assistant": "b", "embedding": _vec(0, 1).tolist()},
-            {"user": "الأحدث", "assistant": "c", "embedding": _vec(0.6, 0.8).tolist()},
+            {"user": "سؤال تأجيل", "assistant": "a", "embedding": _vec(1, 0).tolist(), "at": time.time()},
+            {"user": "سؤال منح", "assistant": "b", "embedding": _vec(0, 1).tolist(), "at": time.time()},
+            {"user": "الأحدث", "assistant": "c", "embedding": _vec(0.6, 0.8).tolist(), "at": time.time()},
         ]
         picked = relevant_turns(history, _vec(1, 0), min_sim=0.45)
         users = [t["user"] for t in picked]
@@ -102,8 +106,8 @@ class TestSemanticMemory(unittest.TestCase):
 
     def test_older_turn_without_embedding_is_skipped(self):
         history = [
-            {"user": "قديم بلا متجه", "assistant": "a"},
-            {"user": "الأحدث", "assistant": "b", "embedding": _vec(1, 0).tolist()},
+            {"user": "قديم بلا متجه", "assistant": "a", "at": time.time()},
+            {"user": "الأحدث", "assistant": "b", "embedding": _vec(1, 0).tolist(), "at": time.time()},
         ]
         picked = relevant_turns(history, _vec(1, 0), min_sim=0.45)
         self.assertEqual([t["user"] for t in picked], ["الأحدث"])
@@ -166,7 +170,9 @@ class TestMongoSessionStore(unittest.TestCase):
 
     def test_push_persists_and_reads_back(self):
         self.store.push("12345", "سؤال", "جواب")
-        self.assertEqual(self.store.get("12345"), [{"user": "سؤال", "assistant": "جواب"}])
+        turn = self.store.get("12345")[0]
+        self.assertEqual((turn["user"], turn["assistant"]), ("سؤال", "جواب"))
+        self.assertIn("at", turn)
 
     def test_caps_to_max_history(self):
         for i in range(25):
