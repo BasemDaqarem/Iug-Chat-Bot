@@ -557,6 +557,7 @@ class IUGChatbot:
         # Retrieval sees a context-aware query (follow-ups inherit the previous
         # turn's topic, colloquial verbs gain their canonical data nouns);
         # the LLM still receives the literal question.
+        base_question = query_rewrite.add_canonical_terms(retrieval_question or question)
         search_question = query_rewrite.add_canonical_terms(
             query_rewrite.with_history_context(retrieval_question or question, history)
         )
@@ -570,6 +571,19 @@ class IUGChatbot:
             relevant_chunks = self._search_all_for_question(
                 search_question, top_k, allowed_collections
             )
+            # سلسلة السياق سلاح ذو حدين: تُنقذ المتابعات الحقيقية («كم هيكلف؟»)
+            # لكنها عند تغيير الموضوع تُغرق البحث بموضوع الدور السابق — ثبت
+            # حياً: «مين رئيس الجامعة؟» بعد سؤال رسوم أعادت مقاطع رسوم فقط
+            # فأنكر البوت معلومة موجودة. لذا يُبحث بالسؤال الخام أيضاً وتُقدَّم
+            # نتائجه (موضوع السائل الحالي لا يُزاحَم أبداً)، وتبقى نتائج
+            # السياق بعدها للمتابعات. (كلفة إضافية شبه معدومة: embed_query
+            # مُكاش، والسؤال بلا مرادفات عامية يطابق متجه الذاكرة المحسوب أصلاً.)
+            if search_question != base_question:
+                primary = self._search_all_for_question(
+                    base_question, top_k, allowed_collections
+                )
+                seen = set(primary)
+                relevant_chunks = primary + [c for c in relevant_chunks if c not in seen]
             # مقارنة معدل الثانوية بمفاتيح القبول سؤال تجميعي: يحتاج جدول
             # المفاتيح كاملاً لا أقرب مقاطعه فقط — top-K التشابهي كان يعيد
             # 8 نسخ لبرامج كلية واحدة (العلوم) ويُسقط مفاتيح بقية الكليات،

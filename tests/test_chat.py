@@ -34,7 +34,7 @@ class ChatBase(unittest.TestCase):
         with patch("app.embeddings.embed_texts", side_effect=fake_embed):
             self.bot._uploaded._indexes["ملف_علامات"] = embeddings.build_index(nchunks)
 
-    def _chat(self, method, *args):
+    def _chat(self, method, *args, **kwargs):
         def fake_groq(headers, payload):
             self.llm_calls.append(payload)
             return "إجابة تجريبية من النموذج."
@@ -42,7 +42,7 @@ class ChatBase(unittest.TestCase):
         with patch.object(config, "CHAT_API_KEY", "test-key"), \
              patch("app.embeddings.embed_texts", side_effect=fake_embed), \
              patch("app.llm._post_with_retry", side_effect=fake_groq):
-            return getattr(self.bot, method)(*args)
+            return getattr(self.bot, method)(*args, **kwargs)
 
     def _system_of_last_call(self) -> str:
         return self.llm_calls[-1]["messages"][0]["content"]
@@ -156,9 +156,13 @@ class TestStudentChat(ChatBase):
                               return_value=[]) as search:
                 self._chat("chat_as_student", "كم هيكلفني رسوم هذا الطلب؟", "12345")
 
-        searched = search.call_args[0][0]
-        self.assertIn("اجل الفصل", searched)          # inherited topic
-        self.assertIn("رسوم هذا الطلب", searched)     # current question
+        # صار البحث مزدوجاً (موسّع بالسياق + خام) — الموسّع يجب أن يرث الموضوع
+        queries = [call.args[0] for call in search.call_args_list]
+        expanded = [q for q in queries if "اجل الفصل" in q]
+        self.assertTrue(expanded, f"لا استعلام ورث الموضوع السابق: {queries}")
+        self.assertIn("رسوم هذا الطلب", expanded[0])   # current question
+        self.assertTrue(any("رسوم هذا الطلب" in q and "اجل الفصل" not in q
+                            for q in queries))          # والخام جرى أيضاً
 
     def test_memory_injects_relevant_turn_and_drops_unrelated(self):
         """الذاكرة الدلالية: الدور القديم ذو الصلة يُحقن، وغير المرتبط يُستبعد،
@@ -372,6 +376,31 @@ class TestUploadedChatFlows(ChatBase):
         res = self._chat("chat_with_all_files", "كم علامة الفيزياء؟", "sess")
         self.assertEqual(res["source"], "uploaded_files_all")
         self.assertTrue(res["top_chunks"])
+
+    def test_topic_switch_after_history_still_searches_raw_question(self):
+        # سلسلة السياق كانت تُغرق البحث بموضوع الدور السابق عند تغيير الموضوع
+        # (ثبت حياً: «مين رئيس الجامعة؟» بعد سؤال رسوم → مقاطع رسوم فقط →
+        # إنكار معلومة موجودة). البحث الخام يجري دائماً وتتقدم نتائجه.
+        import time as _time
+        searches = []
+
+        def fake_search(q, top_k, threshold=None, allowed_collections=None):
+            searches.append(q)
+            if "الهندسة" in q:
+                return ["مقطع رسوم الهندسة"]
+            return ["مقطع رئيس الجامعة"]
+
+        history = [{"user": "كم رسوم ساعة الهندسة؟",
+                    "assistant": "28 ديناراً.", "at": _time.time()}]
+        with patch.object(self.bot._uploaded, "search_all", side_effect=fake_search):
+            res = self._chat(
+                "chat_with_all_files", "من رئيس الجامعة؟", "switch-sess",
+                client_history=history,
+            )
+
+        self.assertTrue(any("الهندسة" in q for q in searches))   # بحث السياق جرى
+        self.assertTrue(any("الهندسة" not in q for q in searches))  # والخام أيضاً
+        self.assertEqual(res["top_chunks"][0], "مقطع رئيس الجامعة")  # الخام يتقدم
 
     def test_admission_question_gets_full_cutoff_table(self):
         # «من يقبلني بمعدلي؟» تجميعي: top-K التشابهي كان يعيد نسخ برامج كلية
