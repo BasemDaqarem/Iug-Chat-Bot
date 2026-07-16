@@ -181,6 +181,25 @@ class TestChat(ApiBase):
         self.assertEqual(r.text, "إجابة")            # three chunks reassembled
         self.assertIn("12345", self.bot.history)     # identity from token
 
+    def test_guest_history_is_accepted_and_bounded(self):
+        """الزائر يرسل سياقه من متصفحه (لا جلسات مخزّنة له) — يُقبل حتى 5 أدوار
+        ويُرفض الفائض بـ422، ولا يُخزَّن شيء على الخادم."""
+        turns = [{"user": f"س{i}", "assistant": f"ج{i}"} for i in range(5)]
+        r = self.client.post("/api/chat/guest",
+                             json={"question": "هل ممكن انقبل بالتمريض؟", "history": turns})
+        self.assertEqual(r.status_code, 200)
+        # (ضمانة «لا تخزين للزائر» في المخزن الحقيقي تغطيها tests/test_security_findings)
+        r6 = self.client.post("/api/chat/guest",
+                              json={"question": "س", "history": turns + [turns[0]]})
+        self.assertEqual(r6.status_code, 422)   # أكثر من 5 أدوار مرفوض
+
+    def test_guest_history_ignored_on_authenticated_routes(self):
+        """الموثّقون سجلهم على الخادم — history من العميل تُتجاهل بلا خطأ."""
+        r = self.client.post("/api/chat",
+                             json={"question": "س", "history": [{"user": "أ", "assistant": "ب"}]},
+                             headers=self.auth("12345"))
+        self.assertEqual(r.status_code, 200)
+
     def test_chat_stream_accepts_employee_and_admin_roles(self):
         """أي سؤال متاح للطالب متاح للموظف والأدمن — كان المسار يرفضهما 403
         برسالة «هذه العملية متاحة للطلاب فقط»."""

@@ -138,18 +138,28 @@ class IUGChatbot:
     #  CHAT ORCHESTRATION
     # ═════════════════════════════════════════════════════════════════════
 
-    def _build_user_message(self, question: str, session_id: str):
+    def _build_user_message(self, question: str, session_id: str, client_history=None):
         """(نص رسالة المستخدم مع الذاكرة المنتقاة، متجه السؤال). مشترك بين
-        المسار العادي والبثّ، فالذاكرة تُبنى بنفس الطريقة في الحالتين."""
+        المسار العادي والبثّ، فالذاكرة تُبنى بنفس الطريقة في الحالتين.
+
+        client_history: سياق يحمله متصفح الزائر (لا جلسات مخزّنة للزوار) —
+        أدواره بلا متجهات محفوظة، فتُطوى نصاً كاملةً بلا انتقاء دلالي."""
+        if client_history is not None:
+            memory_text = sessions_mod.format_memory(client_history)
+            try:
+                q_vec = embeddings.embed_query(question)
+            except Exception:
+                q_vec = None
+            return f"{memory_text}السؤال: {question}", q_vec
         history = self.get_history(session_id)
         memory_text, q_vec = self._memory_block(question, history)
         return f"{memory_text}السؤال: {question}", q_vec
 
-    def _ask_llm(self, system: str, question: str, session_id: str) -> str:
+    def _ask_llm(self, system: str, question: str, session_id: str, client_history=None) -> str:
         """Shared final step of every chat flow: inject only the RELEVANT
         previous turns (semantic short-term memory) before the question, call
         the LLM, record the turn with its reusable embedding."""
-        user_message, q_vec = self._build_user_message(question, session_id)
+        user_message, q_vec = self._build_user_message(question, session_id, client_history)
         answer = self._strip_markdown_tables(chat_completion(system, user_message))
         self.push_history(session_id, question, answer, embedding=q_vec)
         return answer
@@ -463,6 +473,7 @@ class IUGChatbot:
         allowed_collections: set[str] | None = None,
         role_prompt: str | None = None,
         retrieval_question: str | None = None,
+        client_history: list | None = None,
     ) -> dict:
         """
         Same idea as chat_with_file(), but searches across ALL currently
@@ -479,11 +490,13 @@ class IUGChatbot:
             allowed_collections=allowed_collections,
             role_prompt=role_prompt,
             retrieval_question=retrieval_question,
+            client_history=client_history,
         )
         if prepared["kind"] == "instant":
             return prepared["result"]
 
-        answer = self._ask_llm(prepared["system"], question, session_id)
+        answer = self._ask_llm(prepared["system"], question, session_id,
+                               client_history=client_history)
         result = {"answer": answer, "top_chunks": prepared["chunks"], "source": prepared["source"]}
         if prepared["cache_key"]:
             self._answer_cache.set(
@@ -503,6 +516,7 @@ class IUGChatbot:
         allowed_collections: set[str] | None = None,
         role_prompt: str | None = None,
         retrieval_question: str | None = None,
+        client_history: list | None = None,
     ) -> dict:
         """Everything an all-files turn needs BEFORE the LLM call, shared by the
         blocking (`chat_with_all_files`) and streaming (`stream_answer`) paths so
@@ -524,8 +538,9 @@ class IUGChatbot:
                 "source": "structured_admission"}}
 
         # A student-specific prompt must never read from or write to the
-        # answer cache shared by public users.
-        history = self.get_history(session_id)
+        # answer cache shared by public users. Guest client-side context also
+        # makes the turn conversation-specific → never cached.
+        history = client_history if client_history is not None else self.get_history(session_id)
         cacheable = (
             config.CACHE_ENABLED
             and private_context is None
@@ -714,8 +729,14 @@ class IUGChatbot:
         principal: Principal,
         *,
         allowed_collections: set[str],
+        client_history: list | None = None,
     ) -> dict:
-        """Unified role-aware chat path used by the new API endpoints."""
+        """Unified role-aware chat path used by the new API endpoints.
+
+        client_history: سياق محادثة الزائر من متصفحه (الزوار بلا جلسات مخزّنة
+        على الخادم) — يُستخدم للفهم فقط ولا يُخزَّن؛ يُقبل لدور الزائر حصراً."""
+        if principal.role != Role.GUEST:
+            client_history = None  # الموثّقون: سجل الخادم أوثق من أي مدخل عميل
         if principal.role == Role.STUDENT and privacy.asks_about_other_student(
             question, principal.subject
         ):
@@ -741,4 +762,5 @@ class IUGChatbot:
             allowed_collections=allowed_collections,
             role_prompt=prompt_for(principal),
             retrieval_question=retrieval_question,
+            client_history=client_history,
         )

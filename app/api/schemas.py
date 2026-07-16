@@ -78,11 +78,23 @@ class AuthResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class GuestTurn(BaseModel):
+    """دور محادثة يحمله متصفح الزائر — الزوار بلا جلسات مخزّنة على الخادم
+    (قرار أمني: معرّف الزائر يُستخدم مرة واحدة)، فيرسل العميل آخر أدواره مع
+    السؤال ليفهم البوت المتابعات («هل ممكن انقبل بالتمريض؟» بعد ذكر معدله)."""
+
+    user: str = Field(..., min_length=1, max_length=2000)
+    assistant: str = Field(..., min_length=1, max_length=6000)
+
+
 class StudentChatRequest(BaseModel):
     """Chat as the authenticated student — identity comes from the JWT, NOT the
     body, so there is no session_id to spoof."""
 
     question: str = Field(..., min_length=1, max_length=2000, examples=["ما هي حالتي الأكاديمية؟"])
+    # للزائر فقط (مسار /chat/guest): سياق محادثته من متصفحه — لا يُخزَّن أبداً.
+    # للمسارات الموثّقة يُتجاهَل (سجلهم على الخادم أوثق من أي مدخل عميل).
+    history: Optional[List[GuestTurn]] = Field(default=None, max_length=5)
 
 
 # ═════════════════════════════════════════════════════════════════════════

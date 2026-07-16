@@ -12,6 +12,8 @@ FastAPI runs sync routes in its threadpool, so one slow LLM call never blocks
 the event loop or other requests.
 """
 
+import time
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
@@ -133,8 +135,18 @@ def chat_guest(
         return ChatResponse(**bot.chat(body.question, principal.subject))
     available = {item["collection"] for item in bot.get_uploaded_files_list()}
     allowed = file_catalog.allowed_collections(principal, available)
+    # الزوار بلا جلسات مخزّنة (قرار أمني) — متصفح الزائر يرسل آخر أدواره
+    # ليفهم البوت المتابعات؛ تُستخدم لهذا الطلب فقط ولا تُخزَّن أبداً.
+    client_history = None
+    if body.history:
+        now = time.time()
+        client_history = [
+            {"user": t.user, "assistant": t.assistant, "at": now}
+            for t in body.history
+        ]
     return ChatResponse(**bot.chat_as_principal(
-        body.question, principal, allowed_collections=allowed
+        body.question, principal, allowed_collections=allowed,
+        client_history=client_history,
     ))
 
 

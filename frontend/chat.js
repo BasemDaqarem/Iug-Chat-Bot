@@ -209,16 +209,22 @@
   }
 
   // Non-stream fallback for guests.
+  // الزوار بلا جلسات على الخادم — نحمل آخر 5 أدوار محلياً ونرسلها مع كل
+  // سؤال ليفهم البوت المتابعات («هل ممكن انقبل بالتمريض؟» بعد ذكر المعدل).
+  const guestHistory = [];
   async function plainAsk(question, dots) {
     const res = await fetch("/api/chat/guest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, history: guestHistory.slice(-5) }),
     });
     let data = null; try { data = await res.json(); } catch (_) {}
     dots.remove();
     if (res.ok && data) {
-      bubble(data.answer || "لم أستطع إيجاد إجابة.", "bot");
+      const answer = data.answer || "لم أستطع إيجاد إجابة.";
+      bubble(answer, "bot");
+      guestHistory.push({ user: question, assistant: answer });
+      if (guestHistory.length > 5) guestHistory.shift();
     } else {
       bubble("⚠️ " + ((data && data.error && data.error.message) ||
                       "تعذّر الحصول على إجابة. حاول مجدداً."), "bot");
