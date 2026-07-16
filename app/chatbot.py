@@ -562,6 +562,7 @@ class IUGChatbot:
         )
 
         generic_engineering_fee = self._is_generic_engineering_hourly_fee(search_question)
+        admission_table = False
         if self._uploaded.is_empty():
             relevant_chunks = []
         else:
@@ -569,9 +570,12 @@ class IUGChatbot:
                 search_question, top_k, allowed_collections
             )
             # مقارنة معدل الثانوية بمفاتيح القبول سؤال تجميعي: يحتاج جدول
-            # المفاتيح كاملاً لا أقرب مقاطعه فقط. نوجّه حصة استرجاع إضافية
-            # للملفات التي اسمها يدل على القبول/المعدلات (توجيه معتمد على
-            # البيانات — أي ملف يسمّيه الأدمن كذلك يُلتقط تلقائياً).
+            # المفاتيح كاملاً لا أقرب مقاطعه فقط — top-K التشابهي كان يعيد
+            # 8 نسخ لبرامج كلية واحدة (العلوم) ويُسقط مفاتيح بقية الكليات،
+            # فيجيب الموديل بكليتين ويصمت عن التسع الباقيات (ثبت حياً).
+            # نلتقط الملفات التي اسمها يدل على القبول/المعدلات (توجيه معتمد
+            # على البيانات — أي ملف يسمّيه الأدمن كذلك يُلتقط تلقائياً)
+            # ونرسل جدولها كاملاً ما دام تحت السقف.
             if query_rewrite.has_admission_intent(search_question):
                 names = {f["collection"] for f in self._uploaded.list_files()}
                 if allowed_collections is not None:
@@ -579,9 +583,16 @@ class IUGChatbot:
                 focus = {n for n in names
                          if "قبول" in normalize_arabic(n) or "معدلات" in normalize_arabic(n)}
                 if focus:
-                    focused = self._uploaded.search_all(
-                        search_question, config.TOP_K, allowed_collections=focus
-                    )
+                    focused = []
+                    for name in sorted(focus):
+                        focused.extend(self._uploaded.chunks_of(name))
+                    if len(focused) > config.ADMISSION_TABLE_MAX_CHUNKS:
+                        focused = self._uploaded.search_all(
+                            search_question, config.ADMISSION_TABLE_MAX_CHUNKS,
+                            allowed_collections=focus,
+                        )
+                    else:
+                        admission_table = True
                     seen = set(focused)
                     relevant_chunks = focused + [c for c in relevant_chunks if c not in seen]
         context = "\n\n---\n\n".join(relevant_chunks)
@@ -611,6 +622,16 @@ class IUGChatbot:
 تعليمات خاصة بهذا السؤال: لم يحدد الطالب المرحلة الدراسية لسعر الساعة في
 الهندسة. اعرض بشكل منفصل سعر البكالوريوس وسعر الماجستير/الدراسات العليا إذا
 وُجدا في المقاطع أعلاه. لا تخلط بينهما، ولا تخترع قيمة لم ترد في المقاطع.
+"""
+        if admission_table:
+            system += """
+
+تعليمات خاصة بهذا السؤال: جدول مفاتيح القبول متوفر أعلاه كاملاً، فلا تجتزئ:
+- إن سأل «ما التخصصات/الكليات التي تقبلني بمعدلي؟» فاسرد جميع الكليات
+  والتخصصات التي يحققها معدله وفرعه (علمي/أدبي/…) مصنفة حسب الكلية —
+  القائمة الكاملة، لا أمثلة ولا «راجع عمادة القبول» بديلاً عن السرد.
+- ما لا يحققه معدله لا تذكره إلا إن سأل عنه صراحة، وحينها بيّن الفارق.
+- إن لم يُعرف فرعه في التوجيهي فاطلبه، أو قدّم القائمتين مفصولتين بوضوح.
 """
         source = "student_context_rag" if private_context is not None else "uploaded_files_all"
         return {"kind": "llm", "system": system, "chunks": relevant_chunks,

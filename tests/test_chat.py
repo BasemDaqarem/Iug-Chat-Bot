@@ -373,6 +373,41 @@ class TestUploadedChatFlows(ChatBase):
         self.assertEqual(res["source"], "uploaded_files_all")
         self.assertTrue(res["top_chunks"])
 
+    def test_admission_question_gets_full_cutoff_table(self):
+        # «من يقبلني بمعدلي؟» تجميعي: top-K التشابهي كان يعيد نسخ برامج كلية
+        # واحدة ويُسقط بقية الكليات — يجب أن يصل جدول المفاتيح كاملاً للموديل.
+        name = "رسوم البكالوريوس ومعدلات القبول"
+        table = [
+            f"[ملف: {name}] faculty_name: كلية-{i} min_rate: {60 + i}%"
+            for i in range(config.TOP_K + 5)  # أكبر من top-K عمداً
+        ]
+        self.bot._uploaded._chunks[name] = list(table)
+
+        res = self._chat(
+            "chat_with_all_files",
+            "ما هي التخصصات التي يمكن أن تقبلني إذا كان معدلي 81؟",
+            "admission-sess",
+        )
+
+        for chunk in table:
+            self.assertIn(chunk, res["top_chunks"])
+        self.assertIn("جدول مفاتيح القبول متوفر أعلاه كاملاً", self._system_of_last_call())
+
+    def test_oversized_cutoff_table_falls_back_to_bounded_search(self):
+        name = "معدلات القبول الضخمة"
+        self.bot._uploaded._chunks[name] = [f"مفتاح {i}" for i in range(30)]
+
+        with patch.object(config, "ADMISSION_TABLE_MAX_CHUNKS", 3):
+            res = self._chat(
+                "chat_with_all_files",
+                "ما هي التخصصات التي يمكن أن تقبلني إذا كان معدلي 81؟",
+                "admission-big-sess",
+            )
+
+        from_table = [c for c in res["top_chunks"] if c.startswith("مفتاح ")]
+        self.assertLessEqual(len(from_table), 3)
+        self.assertNotIn("جدول مفاتيح القبول متوفر أعلاه كاملاً", self._system_of_last_call())
+
     def test_generic_engineering_hourly_fee_retrieves_both_levels(self):
         searches = []
 
