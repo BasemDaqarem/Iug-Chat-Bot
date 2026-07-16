@@ -393,6 +393,37 @@ class TestUploadedChatFlows(ChatBase):
             self.assertIn(chunk, res["top_chunks"])
         self.assertIn("جدول مفاتيح القبول متوفر أعلاه كاملاً", self._system_of_last_call())
 
+    def test_admission_digest_lines_prepended_when_catalog_has_facts(self):
+        # المفاتيح الرقمية تصل كسطور مستخلصة لا لبس فيها (بلا رسوم) — المقاطع
+        # الخام خلطت سعر الساعة (20 ديناراً) بالمفتاح (65%) في القراءة الحية.
+        name = "رسوم البكالوريوس ومعدلات القبول"
+        self.bot._uploaded._chunks[name] = [
+            f"[ملف: {name}] faculty_name: الآداب program_name: اللغة الإنجليزية "
+            "credit_hour_fee: 20 admission_criteria: {'min_high_school_percentage': 65}"
+        ]
+        self.bot._uploaded._admissions.replace_collection(name, [{
+            "faculty_name": "الآداب", "degree": "بكالوريوس",
+            "program_name": "اللغة الإنجليزية", "credit_hour_fee": 20,
+            "admission_criteria": {
+                "min_high_school_percentage": 65,
+                "allowed_high_school_branches": ["علمي", "أدبي"],
+            },
+        }], rebuild=False)
+        self.bot._uploaded._admissions.rebuild(lambda fact: None)
+
+        res = self._chat(
+            "chat_with_all_files",
+            "ما هي التخصصات التي يمكن أن تقبلني إذا كان معدلي 81؟",
+            "admission-digest-sess",
+        )
+
+        digest = res["top_chunks"][0]
+        self.assertIn("جدول مفاتيح القبول (مستخلص آلياً", digest)
+        self.assertIn("اللغة الإنجليزية", digest)
+        self.assertIn("65%", digest)
+        self.assertNotIn("20", digest.split("\n", 1)[1])  # لا رسوم داخل السطور
+        self.assertIn("المرجع\n  الحصري للمفاتيح الرقمية", self._system_of_last_call())
+
     def test_oversized_cutoff_table_falls_back_to_bounded_search(self):
         name = "معدلات القبول الضخمة"
         self.bot._uploaded._chunks[name] = [f"مفتاح {i}" for i in range(30)]

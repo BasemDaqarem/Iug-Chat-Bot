@@ -173,6 +173,18 @@ class UploadedFilesStore:
     def chunks_of(self, collection_name: str) -> List[str]:
         return self._chunks.get(collection_name, [])
 
+    def admission_context_lines(
+        self, allowed_collections: Optional[set[str]] = None
+    ) -> List[str]:
+        """سطر نظيف لكل حقيقة قبول رقمية (كلية | برنامج | فروع | حد أدنى) —
+        بلا أي رسوم، فلا يستطيع الموديل خلط سعر الساعة بمفتاح القبول كما
+        حدث مع المقاطع الخام. المفاتيح غير الرقمية (كالطب «تنافسية») ليست
+        هنا وتبقى مصدرها المقاطع الخام."""
+        facts = self._admissions.facts
+        if allowed_collections is not None:
+            facts = [f for f in facts if f.source in allowed_collections]
+        return [f.context_line() for f in facts]
+
     def resolve_admission(
         self,
         question: str,

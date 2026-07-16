@@ -563,6 +563,7 @@ class IUGChatbot:
 
         generic_engineering_fee = self._is_generic_engineering_hourly_fee(search_question)
         admission_table = False
+        admission_digest = False
         if self._uploaded.is_empty():
             relevant_chunks = []
         else:
@@ -593,6 +594,19 @@ class IUGChatbot:
                         )
                     else:
                         admission_table = True
+                    # المقاطع الخام تخلط الرسوم بالمفاتيح في القراءة (ثبت حياً:
+                    # سعر ساعة الآداب 20 ديناراً قُرئ «مفتاح 20%») — نُصدّر
+                    # المفاتيح الرقمية كسطور مستخلصة آلياً لا لبس فيها، وتبقى
+                    # الخام للمفاتيح النصية (الطب «تنافسية») والرسوم.
+                    digest = self._uploaded.admission_context_lines(
+                        None if allowed_collections is None
+                        else set(allowed_collections)
+                    )
+                    if digest:
+                        admission_digest = True
+                        focused.insert(0,
+                            "جدول مفاتيح القبول (مستخلص آلياً من ملفات الجامعة):\n"
+                            + "\n".join(digest))
                     seen = set(focused)
                     relevant_chunks = focused + [c for c in relevant_chunks if c not in seen]
         context = "\n\n---\n\n".join(relevant_chunks)
@@ -636,6 +650,13 @@ class IUGChatbot:
   يساويه (مثال: مفتاح 70 ومعدله 81 → مقبول لأن 70 ≤ 81).
 - ما لا يحققه معدله لا تذكره إلا إن سأل عنه صراحة، وحينها بيّن الفارق.
 - إن لم يُعرف فرعه في التوجيهي فاطلبه، أو قدّم القائمتين مفصولتين بوضوح.
+"""
+        if admission_digest:
+            system += """
+- كتلة «جدول مفاتيح القبول (مستخلص آلياً من ملفات الجامعة)» أعلاه هي المرجع
+  الحصري للمفاتيح الرقمية — خذ الحد الأدنى منها حصراً ولا تستخرجه من المقاطع
+  الخام. البرامج ذات الشرط غير الرقمي (مثل الطب «تنافسية») ليست في الكتلة:
+  خذ شرطها النصي من المقاطع الخام واذكرها منفصلة بشرطها كما ورد.
 """
         source = "student_context_rag" if private_context is not None else "uploaded_files_all"
         return {"kind": "llm", "system": system, "chunks": relevant_chunks,
