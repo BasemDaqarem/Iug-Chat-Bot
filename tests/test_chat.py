@@ -377,6 +377,36 @@ class TestUploadedChatFlows(ChatBase):
         self.assertEqual(res["source"], "uploaded_files_all")
         self.assertTrue(res["top_chunks"])
 
+    def test_reference_question_is_never_cached(self):
+        # «اذكرهم» بلا سجل: جوابها عشوائي — تخزينها كان يقدّم العشوائية
+        # نفسها لكل زائر لاحق (اكتشاف sol، الحل الرشيق بدل طبقة تصنيف كاملة).
+        for sess in ("ref-a", "ref-b"):
+            self._chat("chat_with_all_files", "اذكرهم", sess)
+        self.assertEqual(len(self.llm_calls), 2)
+
+    def test_plain_question_still_cache_hits(self):
+        for sess in ("plain-a", "plain-b"):
+            self._chat("chat_with_all_files", "ما هي أهداف الجامعة التعليمية؟", sess)
+        self.assertEqual(len(self.llm_calls), 1)
+
+    def test_pure_reference_skips_raw_search(self):
+        # «اذكرهم» بحثها الخام ضجيج — يُبحث بالاستعلام الموسّع بالسياق فقط.
+        import time as _time
+        searches = []
+
+        def fake_search(q, top_k, threshold=None, allowed_collections=None):
+            searches.append(q)
+            return ["مقطع سياق"]
+
+        history = [{"user": "ما هي كليات الجامعة؟",
+                    "assistant": "11 كلية.", "at": _time.time()}]
+        with patch.object(self.bot._uploaded, "search_all", side_effect=fake_search):
+            self._chat("chat_with_all_files", "اذكرهم", "pureref-sess",
+                       client_history=history)
+
+        self.assertEqual(len(searches), 1)
+        self.assertIn("كليات", searches[0])
+
     def test_topic_switch_after_history_still_searches_raw_question(self):
         # سلسلة السياق كانت تُغرق البحث بموضوع الدور السابق عند تغيير الموضوع
         # (ثبت حياً: «مين رئيس الجامعة؟» بعد سؤال رسوم → مقاطع رسوم فقط →

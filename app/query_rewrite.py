@@ -146,6 +146,25 @@ _ANAPHORA_TOKENS = {
 _SHORT_QUESTION_TOKENS = 3
 
 
+def has_reference_tokens(question: str) -> bool:
+    """هل في السؤال إشارة عائدة («اذكرهم»، «هذا»...)؟ إجابة سؤال كهذا تعتمد
+    على سياق محادثة صاحبه، فلا يجوز تخزينها في كاش مشترك يقدّمها لغيره
+    (ثبت عملياً: أول زائر يسأل «اذكرهم» كان جوابه العشوائي يُكاش للجميع)."""
+    return bool(set(tokenize(question)) & _ANAPHORA_TOKENS)
+
+
+def is_pure_reference(question: str) -> bool:
+    """سؤال إحالة خالص («اذكرهم»، «وشو تخصصه؟»): قصير وكل موضوعه في الدور
+    السابق — البحث بنصه الخام ضجيج محض، والاستعلام الموسّع بالسياق هو
+    الصواب وحده (عكس الأسئلة القصيرة ذات الموضوع الذاتي مثل «مين رئيس
+    الجامعة؟» التي يجب أن يتقدم بحثها الخام)."""
+    tokens = tokenize(question)
+    return (
+        0 < len(tokens) <= _SHORT_QUESTION_TOKENS
+        and bool(set(tokens) & _ANAPHORA_TOKENS)
+    )
+
+
 def needs_history_context(question: str) -> bool:
     tokens = tokenize(question)
     if not tokens:

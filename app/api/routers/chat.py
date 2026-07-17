@@ -140,8 +140,11 @@ def chat_guest(
     client_history = None
     if body.history:
         now = time.time()
+        # قصّ أجوبة السجل الطويلة قبل طيّها في البرومت: 5 أدوار بأجوبة كاملة
+        # (حتى 6000 حرف للدور) تُضخّم السياق فتتفكك أمانة الإجابة في
+        # المحادثات الطويلة (ثبت من ترانسكريبت حي) — أول الجواب يحمل جوهره.
         client_history = [
-            {"user": t.user, "assistant": t.assistant, "at": now}
+            {"user": t.user[:500], "assistant": t.assistant[:1200], "at": now}
             for t in body.history
         ]
     return ChatResponse(**bot.chat_as_principal(
@@ -183,11 +186,13 @@ def chat_one_file(
     principal: Principal = Depends(rate_limited_principal),
     bot: IUGChatbot = Depends(get_bot),
 ) -> ChatResponse:
+    # رسالة واحدة للحالتين (غير موجود / خارج الصلاحية) — اختلافها كان يكشف
+    # وجود ملفات خاصة لمن لا يملك حق رؤيتها.
     files = {f["collection"] for f in bot.get_uploaded_files_list()}
     if collection_name not in files:
-        raise NotFoundError(f"الملف '{collection_name}' غير موجود. ارفعه أولاً.")
+        raise NotFoundError(f"الملف '{collection_name}' غير موجود.")
     if isinstance(bot, IUGChatbot):
         allowed = file_catalog.allowed_collections(principal, files)
         if collection_name not in allowed:
-            raise NotFoundError(f"الملف '{collection_name}' غير موجود ضمن صلاحياتك.")
+            raise NotFoundError(f"الملف '{collection_name}' غير موجود.")
     return ChatResponse(**bot.chat_with_file(body.question, collection_name, principal.subject))

@@ -47,6 +47,10 @@ async def timing_middleware(request: Request, call_next):
     response = await call_next(request)
     elapsed = time.perf_counter() - start
     response.headers["X-Process-Time"] = f"{elapsed:.3f}"
+    # ترويسات أمنية أساسية — التطبيق يقدّم واجهات HTML (دخول/أدمن) بنفسه.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
     log.info("🌐 %s %s → %d (%.2fs)",
              request.method, request.url.path, response.status_code, elapsed)
     return response

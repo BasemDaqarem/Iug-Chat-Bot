@@ -21,7 +21,10 @@ services:
     plan: free                      # كافٍ للتجربة (ينام بعد 15 دقيقة خمول)
     branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    # ‏--proxy-headers مع الثقة بوكيل Render: بدونها كان request.client.host
+    # هو IP الوكيل نفسه لكل الزوار، فتنهار حدود المعدل (دخول + شات الزائر)
+    # إلى دلو عالمي واحد يتشاركه الجميع.
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
     healthCheckPath: /health
     autoDeployTrigger: commit       # كل push إلى main = نشر تلقائي
 

@@ -19,11 +19,11 @@ from app.api.errors import (
 from app.api.schemas import AuthResponse, ErrorResponse, LoginRequest, RegisterRequest
 from app.rbac import Principal
 
-# Login & registration are IP-rate-limited to blunt brute-force / abuse.
+# حدّ الدخول يقيّد login/register فقط (لا /me القرائية — واجهة تتحقق من
+# توكنها دورياً كانت ستحرق ميزانية الدخول وتقفل المستخدم عن دخول حقيقي).
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
-    dependencies=[Depends(login_rate_limit)],
     responses={429: {"model": ErrorResponse, "description": "محاولات كثيرة — انتظر قليلاً"}},
 )
 
@@ -48,6 +48,7 @@ def _to_response(account: dict) -> AuthResponse:
 @router.post(
     "/login",
     response_model=AuthResponse,
+    dependencies=[Depends(login_rate_limit)],
     summary="تسجيل الدخول بالرقم الجامعي",
     description="يتحقّق من الرقم الجامعي وكلمة المرور (bcrypt) ويُرجع ملف الطالب.",
     responses={401: {"model": ErrorResponse, "description": "بيانات دخول غير صحيحة"}},
@@ -78,6 +79,7 @@ def me(principal: Principal = Depends(get_current_principal)) -> AuthResponse:
     "/register",
     response_model=AuthResponse,
     status_code=201,
+    dependencies=[Depends(login_rate_limit)],
     summary="إنشاء حساب طالب جديد",
     description="ينشئ حساباً جديداً بكلمة مرور مشفّرة (bcrypt).",
     responses={409: {"model": ErrorResponse, "description": "الرقم الجامعي مسجّل مسبقاً"}},

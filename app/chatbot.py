@@ -285,6 +285,9 @@ class IUGChatbot:
             any(term in normalized for term in ("رابط", "موقع"))
             and "جامع" in normalized
             and any(term in normalized for term in ("اسلام", "غزه", "الجامعه"))
+            # «الموقع الجغرافي/العنوان/وين مكانها» سؤال مكان لا رابط — يُترك
+            # للاسترجاع (كان الاختصار يخطفه ويجيب بالرابط الإلكتروني).
+            and not any(term in normalized for term in ("جغراف", "عنوان", "مكان", "وين"))
         ):
             return (
                 "رابط الموقع الرسمي للجامعة الإسلامية بغزة هو: "
@@ -545,6 +548,9 @@ class IUGChatbot:
             config.CACHE_ENABLED
             and private_context is None
             and not history
+            # سؤال بإشارة عائدة («اذكرهم») بلا سجل جوابه عشوائي — تخزينه
+            # في الكاش المشترك يقدّم العشوائية نفسها لكل زائر لاحق.
+            and not query_rewrite.has_reference_tokens(question)
         )
         access_key = "*" if allowed_collections is None else ",".join(sorted(allowed_collections))
         cache_key = self._cache_key("all_files", question, access_key) if cacheable else None
@@ -578,12 +584,18 @@ class IUGChatbot:
             # نتائجه (موضوع السائل الحالي لا يُزاحَم أبداً)، وتبقى نتائج
             # السياق بعدها للمتابعات. (كلفة إضافية شبه معدومة: embed_query
             # مُكاش، والسؤال بلا مرادفات عامية يطابق متجه الذاكرة المحسوب أصلاً.)
-            if search_question != base_question:
+            # استثناء: سؤال الإحالة الخالص («اذكرهم») بحثه الخام ضجيج —
+            # نتائج السياق وحدها هي الصواب، فلا بحث مزدوجاً له.
+            if search_question != base_question and \
+                    not query_rewrite.is_pure_reference(retrieval_question or question):
                 primary = self._search_all_for_question(
                     base_question, top_k, allowed_collections
                 )
                 seen = set(primary)
-                relevant_chunks = primary + [c for c in relevant_chunks if c not in seen]
+                extras = [c for c in relevant_chunks if c not in seen]
+                # سقف لإضافات السياق: البرومت المتضخم في المحادثات الطويلة
+                # ثبت أنه يفكك أمانة الخطوات الإجرائية في إجابات الموديل.
+                relevant_chunks = primary + extras[: max(2, top_k // 2)]
             # مقارنة معدل الثانوية بمفاتيح القبول سؤال تجميعي: يحتاج جدول
             # المفاتيح كاملاً لا أقرب مقاطعه فقط — top-K التشابهي كان يعيد
             # 8 نسخ لبرامج كلية واحدة (العلوم) ويُسقط مفاتيح بقية الكليات،
@@ -591,7 +603,15 @@ class IUGChatbot:
             # نلتقط الملفات التي اسمها يدل على القبول/المعدلات (توجيه معتمد
             # على البيانات — أي ملف يسمّيه الأدمن كذلك يُلتقط تلقائياً)
             # ونرسل جدولها كاملاً ما دام تحت السقف.
-            if query_rewrite.has_admission_intent(search_question):
+            # نية القبول تُقاس على سؤال السائل نفسه؛ الاستعلام الموسّع بالسجل
+            # يُعتمد فقط للمتابعة الخالصة («وهل في غيرها؟») التي ترث موضوعها —
+            # وإلا كانت متابعة رسوم بعد حوار قبول تجرّ جدول المفاتيح كاملاً عبثاً.
+            admission_probe = (
+                search_question
+                if query_rewrite.is_pure_reference(retrieval_question or question)
+                else base_question
+            )
+            if query_rewrite.has_admission_intent(admission_probe):
                 names = {f["collection"] for f in self._uploaded.list_files()}
                 if allowed_collections is not None:
                     names &= set(allowed_collections)

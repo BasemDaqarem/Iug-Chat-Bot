@@ -9,7 +9,7 @@ LLM (currently OpenRouter) — with JWT authentication, roles
 (guest / student / employee / admin) that isolate data structurally *before* it
 ever reaches the model, and a full admin panel for content and permissions.
 
-**Status**: 311 automated tests ✅ · golden eval passing ✅ · 99-question live
+**Status**: 316 automated tests ✅ · golden eval passing ✅ · 99-question live
 test · 9-point security review addressed · deployable on Render.
 
 ---
@@ -47,7 +47,7 @@ python server.py          # → http://127.0.0.1:8000/app (UI) and /docs (API do
 ### Tests & evaluation
 
 ```bash
-PYTHONIOENCODING=utf-8 python -m pytest tests/ -q     # 311 tests
+PYTHONIOENCODING=utf-8 python -m pytest tests/ -q     # 316 tests
 PYTHONIOENCODING=utf-8 python eval/run_eval.py        # live golden eval (needs .env)
 ```
 
@@ -165,7 +165,7 @@ app/
 frontend/                ← lightweight RTL HTML/CSS/JS UIs:
                            index (login/register) · chat · admin · employee
 eval/run_eval.py         ← golden eval (run it after any prompt change)
-tests/                   ← 311 tests (security, roles, memory, retrieval, API…)
+tests/                   ← 316 tests (security, roles, memory, retrieval, API…)
 docs/                    ← improvement and test reports
 ```
 

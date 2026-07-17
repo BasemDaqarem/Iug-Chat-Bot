@@ -7,6 +7,8 @@ handed to routes through this dependency — routes never construct services
 themselves, which keeps them thin and lets tests inject a fake bot.
 """
 
+import hmac
+
 from fastapi import Request
 
 from app import auth, config, tokens
@@ -155,5 +157,6 @@ def require_admin(request: Request) -> None:
     if get_current_principal(request).role == Role.ADMIN:
         return
     provided = request.headers.get("X-Admin-Key", "")
-    if not config.ADMIN_API_KEY or provided != config.ADMIN_API_KEY:
+    # مقارنة ثابتة الزمن — المفتاح بوابة صلاحيات كاملة ولا يصح كشفه بقياس التوقيت.
+    if not config.ADMIN_API_KEY or not hmac.compare_digest(provided, config.ADMIN_API_KEY):
         raise ForbiddenError("عملية إدارية — تتطلب مفتاح إدارة صحيحاً (X-Admin-Key).")

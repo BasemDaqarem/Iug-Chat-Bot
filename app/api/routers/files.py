@@ -69,6 +69,11 @@ def upload_file(
     body: UploadRequest,
     bot: IUGChatbot = Depends(get_bot),
 ) -> UploadResponse:
+    # نفس قيد الاسم في المسار الإداري الجديد — الاسم يصير مجموعة Mongo
+    # وملف فهرس على القرص، فلا يُمرَّر حراً من الـ path.
+    import re
+    if not re.fullmatch(r"[^.$/\\]{2,100}", collection_name):
+        raise BadRequestError("اسم الملف غير صالح: 2-100 حرفاً وبدون . أو $ أو / أو \\")
     try:
         result = bot.upload_json_file(collection_name, body.documents)
     except ValueError as exc:
