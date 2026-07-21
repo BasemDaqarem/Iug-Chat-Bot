@@ -6,8 +6,11 @@ this class only orchestrates.
 """
 
 import hashlib
+import json
 import re
+import time
 from typing import List
+from uuid import uuid4
 
 import numpy as np
 
@@ -22,14 +25,19 @@ from app import (
     retrieval,
 )
 from app import rerank as rerank_mod
-from app.conversation_frame import build_query_plan
+from app.conversation_frame import (
+    CONTEXT_ASSISTANT_REFERENCE,
+    CONTEXT_CORRECTION,
+    CONTEXT_FOLLOWUP,
+    build_query_plan,
+)
 from app.evidence_contract import build_evidence_contract, missing_field_query
 from app.domain_router import project_structured_evidence, route_query
 from app.cache import TTLCache
 from app.chunking import SENSITIVE_MARKER
-from app.errors import ChatbotError
+from app.errors import ChatbotError, ServiceNotReadyError
 from app.knowledge_base import KnowledgeBase
-from app.llm import chat_completion, stream_completion
+from app.llm import chat_completion
 from app.log import get_logger
 from app.prompts import (
     PromptContext,
@@ -42,6 +50,7 @@ from app.text_norm import normalize_arabic
 from app.uploaded_files import UploadedFilesStore
 from app.context_builder import build_private_context
 from app.rbac import Principal, Role, prompt_for
+from app.rag_agent import plan_rag_actions
 
 log = get_logger("chatbot")
 
@@ -55,17 +64,15 @@ class IUGChatbot:
         self._uploaded = UploadedFilesStore()
         # persistent (Mongo) by default; tests inject an in-memory store
         self._sessions = sessions if sessions is not None else make_session_store()
-        # Shared across users ON PURPOSE — only ever holds PUBLIC answers
-        # (see the public-turn gate in chat/chat_with_*). No student-specific
-        # response is ever written here, so cross-user isolation is guaranteed.
+        # Kept only for the existing cache-stats API. Product policy disables
+        # all writes/reads of final answers; this cache therefore remains empty.
         self._answer_cache = TTLCache(
             "public_answers", config.CACHE_ANSWER_MAXSIZE, config.CACHE_ANSWER_TTL
         )
-
-    @staticmethod
-    def _cache_key(kind: str, question: str, extra: str = "") -> str:
-        raw = f"{kind}\x00{extra}\x00{question}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        self._readiness_state = "new"
+        self._initialization_error: str | None = None
+        self._initialization_started_at: float | None = None
+        self._ready_at: float | None = None
 
     def cache_stats(self) -> dict:
         return {
@@ -78,9 +85,85 @@ class IUGChatbot:
         embeddings.reset_query_cache()
 
     def initialize(self):
-        """Load data, build chunks, build semantic index."""
-        self._kb.load()
-        self._uploaded.load_all()
+        """Build and validate every retrieval index before serving chat."""
+        self._readiness_state = "starting"
+        self._initialization_started_at = (
+            self._initialization_started_at or time.time()
+        )
+        self._initialization_error = None
+        try:
+            self._kb.load()
+            self._uploaded.load_all()
+            if not self._kb.index_ready or not self._uploaded.index_ready:
+                failed = ", ".join(self._uploaded.failed_sources) or "unknown"
+                raise RuntimeError(
+                    "index readiness verification failed; sources=" + failed
+                )
+        except Exception as exc:
+            self._readiness_state = "failed"
+            self._initialization_error = type(exc).__name__
+            raise
+        self._readiness_state = "ready"
+        self._ready_at = time.time()
+
+    def begin_initialization(self) -> None:
+        """Close the tiny scheduling race before background initialization."""
+        self._readiness_state = "starting"
+        self._initialization_started_at = time.time()
+        self._initialization_error = None
+
+    @property
+    def index_version(self) -> str:
+        raw = "\x00".join((
+            config.RAG_PIPELINE_VERSION,
+            self._kb.index_version,
+            self._uploaded.index_version,
+        ))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def readiness(self) -> dict:
+        index_ready = bool(
+            self._readiness_state == "ready"
+            and self._kb.index_ready
+            and self._uploaded.index_ready
+        )
+        return {
+            "status": "ready" if index_ready else (
+                "failed" if self._readiness_state == "failed" else "starting"
+            ),
+            "index_ready": index_ready,
+            "document_count": self._kb.document_count,
+            "chunk_count": len(self._kb.chunks or []),
+            "uploaded_chunk_count": sum(
+                item["chunks_count"] for item in self._uploaded.list_files()
+            ),
+            "index_version": self.index_version,
+            "failed_sources": self._uploaded.failed_sources,
+            "failed_refresh_sources": self._uploaded.failed_refresh_sources,
+            "initialization_error": self._initialization_error,
+            "initialization_started_at": self._initialization_started_at,
+            "ready_at": self._ready_at,
+        }
+
+    def ensure_ready(self) -> None:
+        """Reject cold-start/failed requests before retrieval or LLM use.
+
+        A freshly constructed test/local facade (state ``new``) remains usable
+        for injected in-memory corpora.  Once production initialization starts,
+        readiness is enforced strictly.
+        """
+        if self._readiness_state == "new":
+            return
+        if (
+            self._readiness_state != "ready"
+            or not self._kb.index_ready
+            or not self._uploaded.index_ready
+        ):
+            raise ServiceNotReadyError(
+                "فهرس المعرفة ما زال قيد التجهيز؛ أعد المحاولة بعد ظهور "
+                "index_ready=true في /health.",
+                details={"status": self._readiness_state},
+            )
 
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC PROPERTIES
@@ -118,11 +201,18 @@ class IUGChatbot:
     def get_history(self, sid: str) -> list:
         return self._sessions.get(sid)
 
-    def push_history(self, sid: str, user: str, assistant: str, embedding=None):
-        self._sessions.push(sid, user, assistant, embedding)
+    def push_history(
+        self, sid: str, user: str, assistant: str, embedding=None,
+        *, status: str = sessions_mod.TurnStatus.VERIFIED,
+        verification: dict | None = None,
+    ):
+        self._sessions.push(
+            sid, user, assistant, embedding, status=status,
+            verification=verification,
+        )
 
     def clear_history(self, sid: str):
-        self._sessions.clear(sid)
+        return self._sessions.clear(sid)
 
     @staticmethod
     def fmt_history(history: list) -> str:
@@ -156,23 +246,16 @@ class IUGChatbot:
     # ═════════════════════════════════════════════════════════════════════
 
     @staticmethod
-    def _history_without_assistant_claims(history: list) -> list:
-        """في حوارات القبول، القيود تأتي من أسئلة المستخدم لا من جواب سابق.
-
-        إعادة حقن جواب ناقص («الأدبي = الآداب فقط») جعل النموذج يكرره رغم
-        وجود جدول أحدث كامل. نبقي كل سؤال وتوقيته ومتجهه، ونستبدل نص المساعد
-        بتنبيه محايد؛ الاسترجاع والسياق الحواري لا يضيعان، والهلوسة لا تتكاثر.
-        """
-        return [
-            {
-                **turn,
-                "assistant": (
-                    "[لا تعتمد هذه الإجابة السابقة كدليل؛ أعد الاستخراج من "
-                    "سياق الجامعة الحالي.]"
-                ),
-            }
-            for turn in history
-        ]
+    def _turn_ids(turns: list) -> list[str]:
+        """Return non-secret stable identifiers for prompt-memory audit."""
+        result = []
+        for turn in turns:
+            turn_id = str(turn.get("turn_id") or "").strip()
+            if not turn_id:
+                raw = f"{turn.get('at', '')}\x00{turn.get('user', '')}"
+                turn_id = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+            result.append(turn_id)
+        return result
 
     def _build_user_message(
         self,
@@ -181,29 +264,50 @@ class IUGChatbot:
         client_history=None,
         *,
         user_constraints_only: bool = False,
+        context_mode: str = "independent",
     ):
         """(نص رسالة المستخدم مع الذاكرة المنتقاة، متجه السؤال). مشترك بين
         المسار العادي والبثّ، فالذاكرة تُبنى بنفس الطريقة في الحالتين.
 
         client_history: سياق يحمله متصفح الزائر (لا جلسات مخزّنة للزوار) —
         أدواره بلا متجهات محفوظة، فتُطوى نصاً كاملةً بلا انتقاء دلالي."""
+        include_history = context_mode in {
+            CONTEXT_FOLLOWUP,
+            CONTEXT_CORRECTION,
+            CONTEXT_ASSISTANT_REFERENCE,
+        }
         if client_history is not None:
-            prompt_history = (
-                self._history_without_assistant_claims(client_history)
-                if user_constraints_only else client_history
+            prompt_history = client_history if include_history else []
+            memory_text = (
+                sessions_mod.format_assistant_reference(
+                    prompt_history[-1] if prompt_history else None
+                )
+                if context_mode == CONTEXT_ASSISTANT_REFERENCE
+                else sessions_mod.format_user_memory(prompt_history)
             )
-            memory_text = sessions_mod.format_memory(prompt_history)
             try:
                 q_vec = embeddings.embed_query(question)
             except Exception:
                 q_vec = None
-            return f"{memory_text}السؤال: {question}", q_vec
+            return (
+                f"{memory_text}السؤال: {question}",
+                q_vec,
+                self._turn_ids(
+                    prompt_history[-1:]
+                    if context_mode == CONTEXT_ASSISTANT_REFERENCE
+                    else prompt_history
+                ),
+            )
         history = self.get_history(session_id)
-        memory_text, q_vec = self._memory_block(
+        memory_text, q_vec, history_turn_ids = self._memory_block(
             question, history,
             user_constraints_only=user_constraints_only,
+            include_history=include_history,
+            include_last_assistant=(
+                context_mode == CONTEXT_ASSISTANT_REFERENCE
+            ),
         )
-        return f"{memory_text}السؤال: {question}", q_vec
+        return f"{memory_text}السؤال: {question}", q_vec, history_turn_ids
 
     def _complete_llm(
         self,
@@ -217,21 +321,14 @@ class IUGChatbot:
             chat_completion(system, user_message, max_tokens=max_tokens)
         )
 
-    def _ask_llm(self, system: str, question: str, session_id: str, client_history=None) -> str:
-        """Shared final step of every chat flow: inject only the RELEVANT
-        previous turns (semantic short-term memory) before the question, call
-        the LLM, record the turn with its reusable embedding."""
-        user_message, q_vec = self._build_user_message(question, session_id, client_history)
-        answer = self._complete_llm(system, user_message)
-        self.push_history(session_id, question, answer, embedding=q_vec)
-        return answer
-
     def _memory_block(
         self,
         question: str,
         history: list,
         *,
         user_constraints_only: bool = False,
+        include_history: bool = True,
+        include_last_assistant: bool = False,
     ):
         """(نص الذاكرة، متجه السؤال). المتجه يُحسب مرة واحدة هنا ويُخزَّن مع
         الدور عند الحفظ فلا يُعاد حسابه لاحقاً (embed_query نفسه مُكاش، فالنداء
@@ -241,15 +338,32 @@ class IUGChatbot:
             vec = embeddings.embed_query(question)
         except Exception as exc:
             log.warning("⚠️ تعذّر تضمين السؤال للذاكرة — fallback نصي: %s", exc)
-            prompt_history = (
-                self._history_without_assistant_claims(history)
-                if user_constraints_only else history
+            prompt_history = history if include_history else []
+            return (
+                sessions_mod.format_assistant_reference(
+                    prompt_history[-1] if prompt_history else None
+                )
+                if include_last_assistant
+                else sessions_mod.format_user_memory(prompt_history),
+                None,
+                self._turn_ids(
+                    prompt_history[-1:] if include_last_assistant
+                    else prompt_history
+                ),
             )
-            return self.fmt_history(prompt_history), None
+        if not include_history:
+            return "", vec, []
         turns = sessions_mod.relevant_turns(history, vec)
-        if user_constraints_only:
-            turns = self._history_without_assistant_claims(turns)
-        return sessions_mod.format_memory(turns), vec
+        if include_last_assistant:
+            selected = history[-1:] if history else []
+            return (
+                sessions_mod.format_assistant_reference(
+                    selected[-1] if selected else None
+                ),
+                vec,
+                self._turn_ids(selected),
+            )
+        return sessions_mod.format_user_memory(turns), vec, self._turn_ids(turns)
 
     _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
@@ -472,7 +586,66 @@ class IUGChatbot:
         return merged
 
     def chat(self, question: str, session_id: str) -> dict:
+        """Trace-wrapped legacy main-corpus path."""
+        trace_id = uuid4().hex
+        token = retrieval.begin_trace()
+        started = time.perf_counter()
+        result = None
+        try:
+            result = self._chat_main(question, session_id)
+        except Exception as exc:
+            events = retrieval.end_trace(token)
+            summary = self._build_trace_summary(
+                trace_id=trace_id,
+                question=question,
+                session_id=session_id,
+                allowed_collections=None,
+                prepared=None,
+                validation_metadata=None,
+                events=events,
+                retrieval_latency_ms=round(
+                    (time.perf_counter() - started) * 1000
+                ),
+                total_latency_ms=round(
+                    (time.perf_counter() - started) * 1000
+                ),
+                error_type=type(exc).__name__,
+            )
+            log.info("RAG_TRACE %s", json.dumps(
+                summary, ensure_ascii=False, sort_keys=True
+            ))
+            raise
+        events = retrieval.end_trace(token)
+        elapsed = round((time.perf_counter() - started) * 1000)
+        result_metadata = result.setdefault("retrieval_metadata", {})
+        prepared = {
+            "chunks": result.get("top_chunks", []),
+            "retrieval_metadata": result_metadata,
+        }
+        summary = self._build_trace_summary(
+            trace_id=trace_id,
+            question=question,
+            session_id=session_id,
+            allowed_collections=None,
+            prepared=prepared,
+            validation_metadata=result_metadata,
+            events=events,
+            retrieval_latency_ms=max(
+                0, elapsed - int(result_metadata.get("generation_latency_ms", 0))
+            ),
+            total_latency_ms=elapsed,
+        )
+        result_metadata["trace_id"] = trace_id
+        result_metadata["diagnostic_trace"] = summary
+        result["trace_id"] = trace_id
+        log.info("RAG_TRACE %s", json.dumps(
+            summary, ensure_ascii=False, sort_keys=True
+        ))
+        return result
+
+    def _chat_main(self, question: str, session_id: str) -> dict:
         """Legacy main-corpus path; every final answer is generated by the LLM."""
+        self.ensure_ready()
         chunk_meta = self._kb.chunk_meta
         current_record = privacy.find_sensitive_record(chunk_meta, session_id)
         relevant_chunks = self._kb.search_for(
@@ -534,7 +707,34 @@ class IUGChatbot:
             evidence_contract=contract.prompt_block(),
             dynamic_instructions=dynamic,
         ))
-        answer = self._ask_llm(system, question, session_id)
+        prepared = {
+            "system": system,
+            "chunks": general_chunks,
+            "validation_chunks": evidence,
+            "excluded": frame.exclusions,
+            "asked_level": frame.degree_level,
+            "generation_max_tokens": None,
+            "retrieval_metadata": {
+                "query_plan": plan.as_metadata(),
+                "conversation_frame": frame.as_metadata(),
+                "evidence_contract": contract.as_metadata(),
+                "active_academic_constraints": {
+                    "branch": frame.branch,
+                    "rate": frame.rate,
+                    "degree": frame.degree_level,
+                },
+            },
+        }
+        answer, q_vec, validation_metadata = self._generate_validated_answer(
+            prepared, question, session_id
+        )
+        self.push_history(
+            session_id,
+            question,
+            answer,
+            embedding=q_vec,
+            status=validation_metadata["turn_status"],
+        )
         source = (
             "privacy_policy_llm" if route == PromptRoute.PRIVACY_REFUSAL
             else "main_corpus_llm"
@@ -549,104 +749,106 @@ class IUGChatbot:
                 "conversation_frame": frame.as_metadata(),
                 "evidence_contract": contract.as_metadata(),
                 "answer_cache_bypassed": True,
+                **validation_metadata,
             },
         }
 
     def chat_with_file(self, question: str, collection_name: str, session_id: str) -> dict:
         """Single-file path; missing files are also explained by the LLM."""
-        history = self.get_history(session_id)
-        frame, plan = build_query_plan(question, history)
-        dynamic: list[str] = []
-        if not self._uploaded.has(collection_name):
-            relevant_chunks: list[str] = []
-            dynamic.append(
-                f"الملف المحدد «{collection_name}» غير موجود؛ اذكر ذلك بوضوح ولا تخترع محتواه."
-            )
-        else:
-            relevant_chunks = self._uploaded.search_one(question, collection_name)
-            if not relevant_chunks:
-                dynamic.append(
-                    "الملف موجود لكن لم يظهر فيه دليل مباشر؛ صرّح بنقص المعلومة دون تخمين."
-                )
-        contract = build_evidence_contract(plan, frame, relevant_chunks)
-        system = build_system_prompt(PromptContext(
-            route=PromptRoute.UPLOADED_FILES,
-            evidence="\n\n---\n\n".join(relevant_chunks),
-            conversation_frame=frame.prompt_block(),
-            evidence_contract=contract.prompt_block(),
-            dynamic_instructions=dynamic,
-        ))
-        answer = self._ask_llm(system, question, session_id)
-        return {
-            "answer": answer,
-            "top_chunks": relevant_chunks,
-            "source": "uploaded_file_llm",
-            "retrieval_metadata": {
-                "llm_always_answer": True,
-                "query_plan": plan.as_metadata(),
-                "conversation_frame": frame.as_metadata(),
-                "evidence_contract": contract.as_metadata(),
-                "answer_cache_bypassed": True,
-            },
-        }
+        exists = self._uploaded.has(collection_name)
+        authoritative = None if exists else [
+            f"[حالة المصدر] الملف المحدد «{collection_name}» غير موجود؛ "
+            "يجب ذكر ذلك بوضوح دون اختراع محتوى."
+        ]
+        result = self.chat_with_all_files(
+            question,
+            session_id,
+            allowed_collections={collection_name} if exists else set(),
+            authoritative_evidence=authoritative,
+        )
+        result["source"] = "uploaded_file_llm"
+        return result
 
-    def chat_with_all_files(
+    def _safe_llm_answer(
         self,
         question: str,
-        session_id: str,
-        top_k: int = config.TOP_K,
+        safe_evidence: str,
         *,
-        private_context: str | None = None,
-        allowed_collections: set[str] | None = None,
-        role_prompt: str | None = None,
-        retrieval_question: str | None = None,
-        client_history: list | None = None,
-        safety_directive: str | None = None,
-        authoritative_evidence: list[str] | None = None,
-    ) -> dict:
-        """
-        Same idea as chat_with_file(), but searches across ALL currently
-        uploaded files merged into a single global ranking — the LLM only
-        ever sees the best top-K chunks overall.
+        max_tokens: int | None = None,
+        strict: bool = False,
+    ) -> str:
+        """Ask the LLM to phrase a bounded safe answer.
 
-        retrieval_question, when given, replaces the literal question FOR THE
-        SEARCH ONLY (e.g. «رئيس قسمي» expanded with the student's major); the
-        LLM, history, and cache always see what the student actually typed.
+        The deterministic pipeline may decide that only a conservative fact is
+        supportable, but it never returns that Python string directly.  Even
+        safety/absence/source-metadata responses are generated by the LLM, as
+        required by the product contract.
         """
-        prepared = self._prepare_all_files(
-            question, session_id, top_k,
-            private_context=private_context,
-            allowed_collections=allowed_collections,
-            role_prompt=role_prompt,
-            retrieval_question=retrieval_question,
-            client_history=client_history,
-            safety_directive=safety_directive,
-            authoritative_evidence=authoritative_evidence,
+        system = (
+            "أنت طبقة الصياغة النهائية لمساعد الجامعة. أجب بالعربية بإيجاز. "
+            "المادة الموثوقة أدناه هي المصدر الوحيد المسموح؛ لا تضف رقماً أو "
+            "اسماً أو رابطاً أو إجراءً غير موجود فيها. "
         )
-        # ابنِ رسالة الذاكرة مرة واحدة، ولا تحفظ المحاولة الأولى قبل أن يجتاز
-        # الجواب الفاحص. سابقاً كانت الإجابة المرفوضة والتصحيح كلاهما يدخلان
-        # السجل فتلوّث الأولى فهم المتابعات التالية.
-        user_message, q_vec = self._build_user_message(
+        if strict:
+            system += (
+                "المحاولة السابقة لم تجتز الفحص، لذلك التزم بمعنى المادة "
+                "حرفياً ولا توسّعها بأي معلومة أخرى."
+            )
+        user_message = (
+            f"السؤال الأصلي: {question}\n\n"
+            "المادة الوحيدة المسموح بصياغتها:\n"
+            f"{safe_evidence}"
+        )
+        return self._complete_llm(
+            system,
+            user_message,
+            max_tokens=max_tokens,
+        )
+
+    def _generate_validated_answer(
+        self,
+        prepared: dict,
+        question: str,
+        session_id: str,
+        *,
+        client_history: list | None = None,
+    ) -> tuple[str, np.ndarray | None, dict]:
+        """Generate, validate, and (when needed) repair one final LLM answer."""
+        user_message, q_vec, history_turn_ids = self._build_user_message(
             question,
             session_id,
             client_history,
             user_constraints_only=bool(
                 prepared.get("retrieval_metadata", {}).get("admission_intent")
             ),
+            context_mode=(
+                prepared.get("retrieval_metadata", {})
+                .get("query_plan", {})
+                .get("context_mode", "independent")
+            ),
         )
         user_message = self._anchor_active_constraints(user_message, prepared)
+        prompt_sha256 = hashlib.sha256(
+            (prepared["system"] + "\x00" + user_message).encode("utf-8")
+        ).hexdigest()
         generation_max_tokens = prepared.get("generation_max_tokens")
+        generation_started = time.perf_counter()
         answer = self._complete_llm(
             prepared["system"],
             user_message,
             max_tokens=generation_max_tokens,
         )
+        generation_count = 1
+        max_generation_attempts = int(
+            prepared.get("retrieval_metadata", {})
+            .get("agentic_rag", {})
+            .get("max_generation_attempts", 3)
+        )
+        max_generation_attempts = max(1, min(3, max_generation_attempts))
 
-        # الفاحص الحتمي (خطة التحسين م3): حقائق دقيقة غير مسندة/خرق
-        # استبعاد/خرق مرحلة/ادعاء تنفيذ فعل غير متاح.
-        # ← إعادة توليد واحدة بتعليمة تصحيحية. صفر كلفة في المسار السليم؛
-        # يغطي المسار المحجوب فقط (البث أرسل حروفه فلا يُسحب).
-        validation_sources = list(prepared["chunks"]) + [question]
+        validation_sources = list(
+            prepared.get("validation_chunks", prepared["chunks"])
+        ) + [question]
         active_constraints = (
             prepared.get("retrieval_metadata", {})
             .get("active_academic_constraints", {})
@@ -658,24 +860,33 @@ class IUGChatbot:
                 f"الفرع الحالي الذي ذكره المستخدم: {active_branch}"
             )
         if active_rate is not None:
-            # قيود مذكورة في دور سابق (مثل «معدلي 85») موجودة في رسالة
-            # الذاكرة، ويجب أن تُعد دليلاً رقمياً على تكرار رقم المستخدم.
-            # نضيف الرقم فقط لا نص الاستعلام، كي لا يتحول سؤال المستخدم نفسه
-            # إلى «دليل» على رابط أو مسار إجرائي.
-            validation_sources.append(f"معدل الثانوية الذي ذكره المستخدم: {active_rate:g}%")
+            validation_sources.append(
+                f"معدل الثانوية الذي ذكره المستخدم: {active_rate:g}%"
+            )
 
-        def _answer_issues(value: str) -> list[str]:
+        contract_metadata = (
+            prepared.get("retrieval_metadata", {}).get("evidence_contract", {})
+        )
+
+        def answer_issues(value: str) -> list[str]:
             return answer_check.problems(
                 value,
                 sources=validation_sources,
                 excluded=prepared.get("excluded", []),
                 asked_level=prepared.get("asked_level"),
                 question=question,
+                entity_terms=contract_metadata.get("entity_terms", []),
+                evidence_sufficient=contract_metadata.get("sufficient"),
+                retrieval_degraded=bool(
+                    prepared.get("retrieval_metadata", {}).get(
+                        "retrieval_degraded"
+                    )
+                ),
             )
 
-        issues = _answer_issues(answer)
+        issues = answer_issues(answer)
         post_retry_issues: list[str] = []
-        safety_fallback = False
+        safe_llm_fallback = False
         if issues:
             source_metadata_gap = (
                 query_rewrite.is_source_metadata_followup(question)
@@ -689,25 +900,33 @@ class IUGChatbot:
                 "ليس رابطاً" in issue
                 or "اسم المورد نفسه غير موجود" in issue
                 or "رابط دليل/خطوات" in issue
+                or "أضفت رابطاً/بريداً/هاتفاً/سنة" in issue
                 for issue in issues
             )
             if source_metadata_gap:
-                # سؤال metadata يمكن حسمه من ترويسة أول سجل مسترجع: لا
-                # نستهلك محاولة ثانية كي يعيد النموذج استعارة تاريخ من سجل آخر.
-                post_retry_issues = list(issues)
-                answer = self._source_metadata_fallback(prepared["chunks"])
-                safety_fallback = True
-            elif hard_exact_gap:
-                # لا معنى لطلب توليد ثانٍ حين أثبت الفاحص أن «الرابط» مجرد
-                # معرّف داخلي أو أن المورد نفسه غائب من الدليل. جواب صادق
-                # فوري أوفر وأأمن من محاولة أخرى قد تعيد التخمين.
-                post_retry_issues = list(issues)
-                answer = (
-                    "المعلومة أو المسار الدقيق المطلوب غير وارد بوضوح في "
-                    "المقاطع المسترجعة، لذلك لا أريد تخمينه. تحقّق من المصدر "
-                    "الرسمي أو الجهة الجامعية المختصة."
+                safe_evidence = self._source_metadata_fallback(prepared["chunks"])
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
                 )
-                safety_fallback = True
+                generation_count += 1
+                safe_llm_fallback = True
+                post_retry_issues = answer_issues(answer)
+            elif hard_exact_gap:
+                safe_evidence = (
+                    "المعلومة أو المسار الدقيق المطلوب غير وارد بوضوح في "
+                    "المقاطع المسترجعة؛ يجب التصريح بعدم القدرة على تأكيده "
+                    "وعدم تخمين رابط أو اسم أو خطوات."
+                )
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
+                )
+                generation_count += 1
+                safe_llm_fallback = True
+                post_retry_issues = answer_issues(answer)
             else:
                 log.info(
                     "🛡️ الفاحص رفض الجواب (%d مشكلة) — إعادة توليد واحدة.",
@@ -723,51 +942,383 @@ class IUGChatbot:
                     user_message,
                     max_tokens=generation_max_tokens,
                 )
-                post_retry_issues = _answer_issues(answer)
+                generation_count += 1
+                post_retry_issues = answer_issues(answer)
+
             unsafe_exact = query_rewrite.requires_direct_evidence(question) or any(
                 "رابطاً/بريداً/هاتفاً/سنة" in issue
                 or "ليس رابطاً" in issue
                 or "رابط دليل/خطوات" in issue
+                or "ادعيتَ أن المعلومة غير موجودة" in issue
                 for issue in post_retry_issues
             )
-            if post_retry_issues and unsafe_exact and not safety_fallback:
-                # لا نستهلك نداءً ثالثاً ولا نسمح لمحاولة تصحيح فاشلة أن
-                # تُرسل رابطاً/مساراً مخمناً. هذا fallback عام لأي مورد دقيق،
-                # لا يعرف إجابة السؤال ولا اسماً أو ملفاً بعينه.
-                answer = (
+            if (
+                post_retry_issues
+                and unsafe_exact
+                and not safe_llm_fallback
+                and generation_count < max_generation_attempts
+            ):
+                safe_evidence = (
                     self._source_metadata_fallback(prepared["chunks"])
                     if query_rewrite.is_source_metadata_followup(question)
                     else (
-                        "المعلومة أو المسار الدقيق المطلوب غير وارد بوضوح في "
-                        "المقاطع المسترجعة، لذلك لا أريد تخمينه. تحقّق من المصدر "
-                        "الرسمي أو الجهة الجامعية المختصة."
+                        "الأدلة التالية مسندة؛ أجب بالمعلومة الموجودة فيها "
+                        "ولا تقل إنها غير موجودة:\n"
+                        + "\n\n".join(prepared["chunks"])
+                    )
+                    if contract_metadata.get("sufficient")
+                    else (
+                        "المعلومة أو المسار الدقيق المطلوب غير وارد بوضوح "
+                        "في الأدلة المتاحة؛ يجب قول ذلك دون تخمين قيمة بديلة."
                     )
                 )
-                safety_fallback = True
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
+                )
+                generation_count += 1
+                safe_llm_fallback = True
+                post_retry_issues = answer_issues(answer)
+
+            # A safe LLM response is itself checked.  One strict LLM phrasing
+            # attempt is allowed; no Python-authored final answer is returned.
+            if (
+                safe_llm_fallback
+                and post_retry_issues
+                and generation_count < max_generation_attempts
+            ):
+                safe_evidence = (
+                    self._source_metadata_fallback(prepared["chunks"])
+                    if query_rewrite.is_source_metadata_followup(question)
+                    else (
+                        "لا يمكن تأكيد المعلومة الدقيقة المطلوبة من الأدلة "
+                        "المتاحة، لذلك يجب الامتناع عن تخمينها."
+                    )
+                )
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
+                    strict=True,
+                )
+                generation_count += 1
+                post_retry_issues = answer_issues(answer)
+
+        resolved_fields = list(contract_metadata.get("resolved_fields", []))
+        missing_fields = list(contract_metadata.get("missing_fields", []))
+        if post_retry_issues:
+            turn_status = sessions_mod.TurnStatus.VALIDATION_FAILURE
+        elif contract_metadata.get("sufficient"):
+            turn_status = sessions_mod.TurnStatus.VERIFIED
+        elif resolved_fields and missing_fields:
+            turn_status = sessions_mod.TurnStatus.PARTIAL
+        elif not prepared.get("chunks"):
+            turn_status = sessions_mod.TurnStatus.RETRIEVAL_FAILURE
+        else:
+            turn_status = sessions_mod.TurnStatus.INSUFFICIENT_EVIDENCE
+        generation_outcome = (
+            "safe_llm_fallback"
+            if safe_llm_fallback
+            else "corrected"
+            if issues
+            else "first_pass"
+        )
+        generation_latency_ms = round(
+            (time.perf_counter() - generation_started) * 1000
+        )
+        retrieval.record_trace({
+            "scope": "answer_validation",
+            "strategy": "deterministic_claim_check_bounded_llm_repair",
+            "initial_issue_count": len(issues),
+            "final_issue_count": len(post_retry_issues),
+            "generation_count": generation_count,
+            "turn_status": turn_status,
+            "generation_outcome": generation_outcome,
+            "final_answer_origin": "llm",
+        })
+        return answer, q_vec, {
+            "answer_check_retry": bool(issues),
+            "answer_check_issues": list(issues),
+            "answer_check_post_retry_issues": list(post_retry_issues),
+            "answer_check_safety_fallback": safe_llm_fallback,
+            "final_answer_origin": "llm",
+            "llm_generation_count": generation_count,
+            "llm_generation_limit": max_generation_attempts,
+            "generation_outcome": generation_outcome,
+            "turn_status": turn_status,
+            "history_turn_ids_used": history_turn_ids,
+            "prompt_sha256": prompt_sha256,
+            "generation_latency_ms": generation_latency_ms,
+        }
+
+    def _build_trace_summary(
+        self,
+        *,
+        trace_id: str,
+        question: str,
+        session_id: str,
+        allowed_collections: set[str] | None,
+        prepared: dict | None,
+        validation_metadata: dict | None,
+        events: list[dict],
+        retrieval_latency_ms: int,
+        total_latency_ms: int,
+        error_type: str | None = None,
+    ) -> dict:
+        """Collapse detailed request-local events into one safe audit record."""
+        prepared_metadata = (prepared or {}).get("retrieval_metadata", {})
+        query_plan = dict(prepared_metadata.get("query_plan", {}))
+        contract = prepared_metadata.get("evidence_contract", {})
+        validation = validation_metadata or {}
+
+        before_rerank: list[str] = []
+        after_rerank: list[str] = []
+        reranker_events = []
+        for event in events:
+            for candidate in event.get("candidates", []):
+                candidate_id = candidate.get("candidate_id") or candidate.get(
+                    "chunk_sha256"
+                )
+                if candidate_id and candidate_id not in before_rerank:
+                    before_rerank.append(candidate_id)
+            if event.get("scope") == "reranker":
+                reranker_events.append({
+                    "status": event.get("status"),
+                    "latency_ms": event.get("latency_ms"),
+                    "error_type": event.get("error_type"),
+                })
+                for candidate in event.get("selected", []):
+                    candidate_id = candidate.get("chunk_sha256")
+                    if candidate_id and candidate_id not in after_rerank:
+                        after_rerank.append(candidate_id)
+
+        evidence_ids = [
+            hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+            for chunk in (prepared or {}).get("chunks", [])
+        ]
+        retry_reasons = []
+        if prepared_metadata.get("coverage_retry_query"):
+            retry_reasons.append("evidence_coverage")
+        if validation.get("answer_check_retry"):
+            retry_reasons.append("answer_validation")
+        if any(
+            item.get("status") not in {None, "applied"}
+            for item in reranker_events
+        ):
+            retry_reasons.append("reranker_fallback")
+
+        privacy_trace = query_plan.get("intent") == "privacy"
+        standalone_query = query_plan.get("standalone_query")
+        standalone_query_hash = (
+            hashlib.sha256(str(standalone_query).encode("utf-8")).hexdigest()
+            if standalone_query else None
+        )
+        if standalone_query and (
+            privacy_trace or not config.TRACE_INCLUDE_QUERY_TEXT
+        ):
+            standalone_query = (
+                "[redacted:privacy]" if privacy_trace else "[redacted:config]"
+            )
+            for key in (
+                "original_question", "standalone_query", "retrieval_question"
+            ):
+                if key in query_plan:
+                    query_plan[key] = standalone_query
+            if privacy_trace:
+                query_plan["entities"] = {}
+        scope_value = (
+            "*" if allowed_collections is None
+            else "\x00".join(sorted(allowed_collections))
+        )
+        return {
+            "trace_id": trace_id,
+            "pipeline_version": config.RAG_PIPELINE_VERSION,
+            "index_version": prepared_metadata.get(
+                "index_version", self.index_version
+            ),
+            "session_id_hash": hashlib.sha256(
+                str(session_id).encode("utf-8")
+            ).hexdigest()[:16],
+            "question_hash": hashlib.sha256(
+                question.encode("utf-8")
+            ).hexdigest(),
+            "access_scope_hash": hashlib.sha256(
+                scope_value.encode("utf-8")
+            ).hexdigest()[:16],
+            "context_mode": query_plan.get("context_mode"),
+            "standalone_query": standalone_query,
+            "standalone_query_hash": standalone_query_hash,
+            "query_plan": query_plan,
+            "retrieval_cache_hit": False,
+            "candidate_ids_before_rerank": before_rerank,
+            "candidate_ids_after_rerank": after_rerank,
+            "selected_evidence_ids": evidence_ids,
+            "structured_fields": contract.get("resolved_fields", []),
+            "evidence_sufficient": contract.get("sufficient", False),
+            "reranker_status": prepared_metadata.get("rerank_status"),
+            "reranker_events": reranker_events,
+            "history_turn_ids_used": validation.get(
+                "history_turn_ids_used", []
+            ),
+            "prompt_sha256": validation.get("prompt_sha256"),
+            "llm_model": config.CHAT_API_MODEL,
+            "answer_validation": {
+                "initial_issues": validation.get("answer_check_issues", []),
+                "final_issues": validation.get(
+                    "answer_check_post_retry_issues", []
+                ),
+                "turn_status": validation.get("turn_status"),
+                "generation_outcome": validation.get("generation_outcome"),
+                "generation_count": validation.get("llm_generation_count", 0),
+                "final_answer_origin": validation.get("final_answer_origin"),
+            },
+            "retry_reason": retry_reasons or None,
+            "latency_ms": {
+                "retrieval": retrieval_latency_ms,
+                "generation": validation.get("generation_latency_ms", 0),
+                "total": total_latency_ms,
+            },
+            "error_type": error_type,
+        }
+
+    def chat_with_all_files(
+        self,
+        question: str,
+        session_id: str,
+        top_k: int = config.TOP_K,
+        *,
+        private_context: str | None = None,
+        allowed_collections: set[str] | None = None,
+        role_prompt: str | None = None,
+        retrieval_question: str | None = None,
+        client_history: list | None = None,
+        safety_directive: str | None = None,
+        authoritative_evidence: list[str] | None = None,
+        trace_id: str | None = None,
+    ) -> dict:
+        """
+        Same idea as chat_with_file(), but searches across ALL currently
+        uploaded files merged into a single global ranking — the LLM only
+        ever sees the best top-K chunks overall.
+
+        retrieval_question, when given, replaces the literal question FOR THE
+        SEARCH ONLY (e.g. «رئيس قسمي» expanded with the student's major); the
+        LLM, history, and cache always see what the student actually typed.
+        """
+        trace_id = trace_id or uuid4().hex
+        trace_token = retrieval.begin_trace()
+        turn_started = time.perf_counter()
+        retrieval_started = time.perf_counter()
+        prepared = None
+        validation_metadata = None
+        try:
+            # A publication can complete while retrieval is in progress.  If
+            # the generation changed, discard the mixed preparation and retry
+            # once before any LLM call; a second change yields a clean 503.
+            for preparation_attempt in range(2):
+                version_before = self.index_version
+                prepared = self._prepare_all_files(
+                    question, session_id, top_k,
+                    private_context=private_context,
+                    allowed_collections=allowed_collections,
+                    role_prompt=role_prompt,
+                    retrieval_question=retrieval_question,
+                    client_history=client_history,
+                    safety_directive=safety_directive,
+                    authoritative_evidence=authoritative_evidence,
+                )
+                version_after = self.index_version
+                if version_before == version_after:
+                    prepared["retrieval_metadata"]["index_version"] = version_after
+                    prepared["retrieval_metadata"]["index_refresh_retry"] = bool(
+                        preparation_attempt
+                    )
+                    break
+                retrieval.record_trace({
+                    "scope": "index_consistency",
+                    "status": "version_changed_retry",
+                    "attempt": preparation_attempt + 1,
+                })
+            else:
+                raise ServiceNotReadyError(
+                    "تزامن السؤال مع تحديث متكرر للفهرس؛ أعد المحاولة بعد لحظة."
+                )
+            retrieval_latency_ms = round(
+                (time.perf_counter() - retrieval_started) * 1000
+            )
+            answer, q_vec, validation_metadata = self._generate_validated_answer(
+                prepared,
+                question,
+                session_id,
+                client_history=client_history,
+            )
+        except Exception as exc:
+            events = retrieval.end_trace(trace_token)
+            trace_summary = self._build_trace_summary(
+                trace_id=trace_id,
+                question=question,
+                session_id=session_id,
+                allowed_collections=allowed_collections,
+                prepared=prepared,
+                validation_metadata=validation_metadata,
+                events=events,
+                retrieval_latency_ms=round(
+                    (time.perf_counter() - retrieval_started) * 1000
+                ),
+                total_latency_ms=round(
+                    (time.perf_counter() - turn_started) * 1000
+                ),
+                error_type=type(exc).__name__,
+            )
+            log.info("RAG_TRACE %s", json.dumps(
+                trace_summary, ensure_ascii=False, sort_keys=True
+            ))
+            raise
+
+        events = retrieval.end_trace(trace_token)
+        total_latency_ms = round((time.perf_counter() - turn_started) * 1000)
+        trace_summary = self._build_trace_summary(
+            trace_id=trace_id,
+            question=question,
+            session_id=session_id,
+            allowed_collections=allowed_collections,
+            prepared=prepared,
+            validation_metadata=validation_metadata,
+            events=events,
+            retrieval_latency_ms=retrieval_latency_ms,
+            total_latency_ms=total_latency_ms,
+        )
+        log.info("RAG_TRACE %s", json.dumps(
+            trace_summary, ensure_ascii=False, sort_keys=True
+        ))
 
         # لا يدخل الذاكرة إلا الجواب النهائي الذي سيصل للمستخدم.
-        self.push_history(session_id, question, answer, embedding=q_vec)
+        self.push_history(
+            session_id,
+            question,
+            answer,
+            embedding=q_vec,
+            status=validation_metadata["turn_status"],
+            verification={
+                "trace_id": trace_id,
+                "index_version": trace_summary["index_version"],
+                "evidence_ids": trace_summary["selected_evidence_ids"],
+                "evidence_sufficient": trace_summary["evidence_sufficient"],
+            },
+        )
 
         retrieval_metadata = dict(prepared.get("retrieval_metadata", {}))
-        retrieval_metadata["answer_check_retry"] = bool(issues)
-        retrieval_metadata["answer_check_issues"] = list(issues)
-        retrieval_metadata["answer_check_post_retry_issues"] = list(
-            post_retry_issues
-        )
-        retrieval_metadata["answer_check_safety_fallback"] = safety_fallback
+        retrieval_metadata.update(validation_metadata)
+        retrieval_metadata["trace_id"] = trace_id
+        retrieval_metadata["diagnostic_trace"] = trace_summary
         result = {
             "answer": answer,
             "top_chunks": prepared["chunks"],
             "source": prepared["source"],
+            "trace_id": trace_id,
             "retrieval_metadata": retrieval_metadata,
         }
-        if prepared["cache_key"]:
-            self._answer_cache.set(
-                prepared["cache_key"],
-                {"answer": answer, "top_chunks": list(prepared["chunks"]),
-                 "source": "uploaded_files_all",
-                 "retrieval_metadata": retrieval_metadata},
-            )
         return result
 
     def _prepare_all_files(
@@ -788,6 +1339,7 @@ class IUGChatbot:
         blocking (`chat_with_all_files`) and streaming (`stream_answer`) paths so
         the two can never drift. Deterministic services prepare evidence only;
         the returned plan always has kind="llm" so every user turn reaches the LLM."""
+        self.ensure_ready()
         # Every route ends in one LLM generation.  Deterministic components
         # may prepare authoritative evidence, but never return the final answer.
         history = client_history if client_history is not None else self.get_history(session_id)
@@ -795,6 +1347,12 @@ class IUGChatbot:
             question,
             history,
             retrieval_question=retrieval_question,
+        )
+        previous_turn = history[-1] if history else {}
+        repeated_after_low_confidence = bool(
+            previous_turn.get("status") in sessions_mod.LOW_CONFIDENCE_STATUSES
+            and normalize_arabic(str(previous_turn.get("user") or ""))
+            == normalize_arabic(question)
         )
         if safety_directive:
             frame.intent = "privacy"
@@ -819,34 +1377,47 @@ class IUGChatbot:
             )
             structured_source = "trusted_fact_llm"
 
-        admission = self._uploaded.resolve_admission(
-            plan.standalone_query, allowed_collections
+        agent_plan = plan_rag_actions(
+            plan,
+            frame,
+            domain_route,
+            has_authoritative_evidence=bool(authoritative),
+            safety_directive=bool(safety_directive),
         )
-        if admission is not None:
-            authoritative.append(
-                "[نتيجة قبول منظمة محسوبة من حقائق الجامعة؛ لا تعِد حسابها من نص مجاور]\n"
-                + admission.answer
+        if agent_plan.use_structured_lookup and not safety_directive:
+            admission = self._uploaded.resolve_admission(
+                plan.standalone_query, allowed_collections
             )
-            structured_chunks.extend(admission.top_chunks)
-            structured_source = "structured_admission_llm"
+            if admission is not None:
+                authoritative.append(
+                    "[نتيجة قبول منظمة محسوبة من حقائق الجامعة؛ لا تعِد حسابها من نص مجاور]\n"
+                    + admission.answer
+                )
+                structured_chunks.extend(admission.top_chunks)
+                structured_source = "structured_admission_llm"
+                # Exact structured evidence may let the bounded agent skip a
+                # redundant general search for a single-field question.
+                agent_plan = plan_rag_actions(
+                    plan,
+                    frame,
+                    domain_route,
+                    has_authoritative_evidence=True,
+                    safety_directive=False,
+                )
 
-        # The embedding/retrieval caches remain useful, but serving a cached
-        # final answer would violate the all-questions-to-LLM requirement.
-        cacheable = (
-            config.CACHE_ENABLED
-            and config.ANSWER_CACHE_ENABLED
-            and not config.LLM_ALWAYS_ANSWER
-            and private_context is None
-            and not history
-            and not query_rewrite.has_reference_tokens(question)
-        )
-        access_key = "*" if allowed_collections is None else ",".join(sorted(allowed_collections))
-        cache_key = self._cache_key("all_files", question, access_key) if cacheable else None
+        # Final-answer caching is a product-level prohibition.  Only safe
+        # embedding/index caches remain; retrieval itself is executed anew.
+        cache_key = None
 
         base_question = query_rewrite.add_canonical_terms(
             query_rewrite.positive_query(retrieval_question or question)
         )
         search_question = plan.standalone_query
+        if repeated_after_low_confidence:
+            # The previous assistant text is already excluded from memory.
+            # Widen the fresh retrieval deterministically as an additional
+            # guard for a repeated question after a weak turn.
+            search_question = query_rewrite.add_coverage_terms(search_question)
         active_constraints = {
             "branch": frame.branch,
             "rate": frame.rate,
@@ -862,11 +1433,12 @@ class IUGChatbot:
             admission_intent
             or complete_list_requested
             or domain_route.use_wide_retrieval
+            or repeated_after_low_confidence
         )
         target_k = max(top_k, config.COVERAGE_TOP_K) if coverage_requested else top_k
         rerank_requested = (
             config.RERANK_ENABLED
-            and domain_route.use_reranker
+            and agent_plan.use_reranker
             and not complete_list_requested
         )
 
@@ -885,7 +1457,7 @@ class IUGChatbot:
             if rerank_requested
             else target_k
         )
-        skip_general_retrieval = bool(authoritative) and not plan.is_compound
+        skip_general_retrieval = not agent_plan.use_hybrid_retrieval
         if safety_directive:
             relevant_chunks = []
         elif skip_general_retrieval:
@@ -1158,6 +1730,15 @@ class IUGChatbot:
                 budget -= len(c)
             relevant_chunks = trimmed
 
+        parent_expansion_added = 0
+        if agent_plan.use_parent_expansion and relevant_chunks:
+            relevant_chunks, parent_expansion_added = (
+                self._uploaded.expand_parent_chunks(
+                    relevant_chunks,
+                    max_additions=config.PARENT_EXPANSION_MAX_CHUNKS,
+                )
+            )
+
         structured_projection = project_structured_evidence(
             domain_route, relevant_chunks
         )
@@ -1192,14 +1773,27 @@ class IUGChatbot:
         )
         coverage_retry_query = None
         coverage_retry_added = 0
+        reranker_failed = rerank_status in {
+            "error_fallback", "empty_fallback", "circuit_open_fallback"
+        }
         if (
             config.EVIDENCE_CONTRACT_ENABLED
-            and plan.route == "advanced_rag"
-            and contract.missing_fields
+            and agent_plan.allow_evidence_retry
+            and (
+                contract.missing_fields
+                or contract.contradictions
+                or not contract.entity_supported
+                or reranker_failed
+            )
             and not safety_directive
             and not skip_general_retrieval
         ):
             coverage_retry_query = missing_field_query(plan, contract)
+            if not coverage_retry_query and reranker_failed:
+                coverage_retry_query = (
+                    plan.standalone_query
+                    + " (توسيع RRF بعد تعذر إعادة الترتيب)"
+                )
             if coverage_retry_query:
                 extra_chunks = self._search_all_for_question(
                     coverage_retry_query,
@@ -1248,6 +1842,17 @@ class IUGChatbot:
         if frame.ambiguous and not frame.reference:
             dynamic_instructions.append(
                 "السؤال ما زال يحتمل أكثر من مرجع؛ اطلب تحديداً قصيراً بدل اختيار موضوع عشوائي."
+            )
+        if reranker_failed:
+            dynamic_instructions.append(
+                "تعذرت إعادة الترتيب واستخدم النظام RRF الموسع؛ لا تدّعِ أن "
+                "المعلومة غير موجودة إلا إذا ظل عقد الأدلة ناقصاً بعد المحاولة الثانية."
+            )
+        if self._uploaded.failed_refresh_sources:
+            dynamic_instructions.append(
+                "تعذر تحديث مصدر واحد على الأقل وبقيت نسخته السابقة فعالة؛ "
+                "لا تستخدم نفياً قطعياً لمعلومة غائبة، وقل إنك لا تستطيع "
+                "تأكيدها من النسخة المتاحة حالياً."
             )
 
         prompt_route = (
@@ -1387,6 +1992,10 @@ class IUGChatbot:
 من الأدلة قبل إنهاء الإجابة، ويجوز الإطالة بقدر الحاجة لإكمال الأجزاء.
 """
 
+        agent_metadata = agent_plan.as_metadata()
+        agent_metadata["retrieval_attempts_used"] = (
+            0 if skip_general_retrieval else 1 + int(bool(coverage_retry_query))
+        )
         retrieval_metadata = {
             "base_query": base_question,
             "search_query": search_question,
@@ -1403,11 +2012,20 @@ class IUGChatbot:
             "cache_hit": False,
             "answer_cache_bypassed": bool(config.LLM_ALWAYS_ANSWER),
             "llm_always_answer": True,
+            "retrieval_cache_hit": False,
+            "force_refresh": repeated_after_low_confidence,
+            "previous_turn_status": previous_turn.get("status"),
+            "index_refresh_failures": self._uploaded.failed_refresh_sources,
+            "retrieval_degraded": bool(
+                reranker_failed or self._uploaded.failed_refresh_sources
+            ),
             "active_academic_constraints": active_constraints,
             "query_plan": plan.as_metadata(),
             "domain_route": domain_route.as_metadata(),
             "conversation_frame": frame.as_metadata(),
             "evidence_contract": contract.as_metadata(),
+            "agentic_rag": agent_metadata,
+            "parent_expansion_added": parent_expansion_added,
             "coverage_retry_query": coverage_retry_query,
             "coverage_retry_added": coverage_retry_added,
             "candidate_metadata": self._uploaded.candidate_metadata_for_chunks(
@@ -1416,7 +2034,7 @@ class IUGChatbot:
             "source_metadata_extracted": source_metadata_extracted,
             "authoritative_evidence_count": len(authoritative),
             "safety_directive_applied": bool(safety_directive),
-            "pipeline_version": "adaptive-rag-v2",
+            "pipeline_version": config.RAG_PIPELINE_VERSION,
         }
         if admission_table or complete_list_requested:
             generation_max_tokens = config.LLM_COVERAGE_MAX_TOKENS
@@ -1429,7 +2047,7 @@ class IUGChatbot:
         )
         retrieval.record_trace({
             "scope": "retrieval_plan",
-            "strategy": "adaptive_query_plan_structured_hybrid_selective_rerank",
+            "strategy": "bounded_agentic_structured_hybrid_parent_rerank",
             **retrieval_metadata,
         })
         if safety_directive:
@@ -1504,17 +2122,20 @@ class IUGChatbot:
             ),
         }
 
-    def stream_answer(self, question: str, principal: Principal, *, allowed_collections):
-        """Streaming twin of chat_as_principal: yields the answer token-by-token.
+    def stream_answer(
+        self,
+        question: str,
+        principal: Principal,
+        *,
+        allowed_collections,
+        trace_id: str | None = None,
+    ):
+        """Validated streaming twin of ``chat_as_principal``.
 
-        Mirrors chat_as_principal EXACTLY — same privacy refusal, same
-        RBAC-filtered `allowed_collections` (so streaming can't reach a
-        collection the blocking path would hide), same private context, same
-        major-expanded evidence selection — then streams the LLM content instead
-        of blocking on it. Privacy policies, trusted facts, and structured
-        resolutions are evidence for this same LLM call rather than final-answer
-        shortcuts. Once the stream completes it records history; answer caching
-        remains bypassed when LLM_ALWAYS_ANSWER is enabled.
+        Generation is buffered server-side, checked, and corrected before the
+        first answer byte is emitted.  The validated LLM answer is then sent in
+        small chunks so the UI keeps its streaming behaviour without exposing a
+        rejected first draft.
 
         Errors after the first byte surface as visible text — the HTTP status
         was already sent and can no longer become a clean 502."""
@@ -1540,53 +2161,27 @@ class IUGChatbot:
                 major = ((account or {}).get("profile") or {}).get("major")
                 retrieval_question = query_rewrite.personalize_query(question, major)
 
-        prepared = self._prepare_all_files(
-            question, principal.subject,
-            private_context=private_context,
-            allowed_collections=allowed_collections,
-            role_prompt=prompt_for(principal),
-            retrieval_question=retrieval_question,
-            safety_directive=safety_directive,
-            authoritative_evidence=authoritative_evidence,
-        )
-        user_message, q_vec = self._build_user_message(
-            question,
-            principal.subject,
-            user_constraints_only=bool(
-                prepared.get("retrieval_metadata", {}).get("admission_intent")
-            ),
-        )
-        user_message = self._anchor_active_constraints(user_message, prepared)
-        parts: List[str] = []
         try:
-            generation_max_tokens = prepared.get("generation_max_tokens")
-            stream = (
-                stream_completion(
-                    prepared["system"],
-                    user_message,
-                    max_tokens=generation_max_tokens,
-                )
-                if generation_max_tokens
-                else stream_completion(prepared["system"], user_message)
+            result = self.chat_with_all_files(
+                question,
+                principal.subject,
+                private_context=private_context,
+                allowed_collections=allowed_collections,
+                role_prompt=prompt_for(principal),
+                retrieval_question=retrieval_question,
+                safety_directive=safety_directive,
+                authoritative_evidence=authoritative_evidence,
+                trace_id=trace_id,
             )
-            for chunk in stream:
-                parts.append(chunk)
-                yield chunk
         except ChatbotError as exc:
-            yield ("\n\n⚠️ " + exc.message) if parts else ("⚠️ " + exc.message)
+            yield "⚠️ " + exc.message
             return
 
-        # ما بُثّ للعميل يعالجه تحويل الواجهة؛ هنا ننظّف النسخة المحفوظة
-        # (سجل + كاش) من أي جدول كي لا يُعاد تقديمه لاحقاً كما هو.
-        answer = self._strip_markdown_tables("".join(parts).strip())
-        if answer:
-            self.push_history(principal.subject, question, answer, embedding=q_vec)
-            if prepared["cache_key"]:
-                self._answer_cache.set(
-                    prepared["cache_key"],
-                    {"answer": answer, "top_chunks": list(prepared["chunks"]),
-                     "source": "uploaded_files_all"},
-                )
+        answer = result["answer"]
+        if not answer:
+            return
+        for start in range(0, len(answer), 96):
+            yield answer[start:start + 96]
 
     def chat_as_principal(
         self,

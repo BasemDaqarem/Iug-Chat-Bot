@@ -1,0 +1,18 @@
+{
+  "updated_at": "2026-07-21T20:19:22.024770+00:00",
+  "completed": 440,
+  "total": 440,
+  "successful": 440,
+  "errors": 0,
+  "after_latency_ms": {
+    "mean": 4155.7,
+    "median": 3800.0,
+    "p95": 7112.0,
+    "max": 17275.0
+  },
+  "reported_total_tokens": 3937212,
+  "model": "openai/gpt-oss-20b",
+  "cache_enabled": true,
+  "rerank_enabled": true,
+  "max_context_chars": 0
+}

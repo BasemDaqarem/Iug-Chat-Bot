@@ -78,6 +78,8 @@ def upload_file(
         result = bot.upload_json_file(collection_name, body.documents)
     except ValueError as exc:
         raise BadRequestError(str(exc))
+    except RuntimeError as exc:
+        raise UpstreamError(str(exc))
     indexed = any(
         f["collection"] == collection_name and f["indexed"]
         for f in bot.get_uploaded_files_list()

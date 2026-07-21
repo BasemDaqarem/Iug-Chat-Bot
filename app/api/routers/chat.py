@@ -85,16 +85,29 @@ def chat_stream(
     bot: IUGChatbot = Depends(get_bot),
 ) -> StreamingResponse:
     # Belt-and-braces: tell any proxy NOT to buffer this response either.
-    stream_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+    trace_id = uuid4().hex
+    stream_headers = {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache",
+        "X-Trace-ID": trace_id,
+    }
     if not isinstance(bot, IUGChatbot):  # injected test/legacy bot — no Mongo
         return StreamingResponse(
             bot.stream_answer(body.question, principal.subject),
             media_type="text/plain; charset=utf-8", headers=stream_headers,
         )
+    # Streaming sends HTTP 200 before consuming the generator.  Readiness must
+    # therefore be checked here, while a clean 503 can still be returned.
+    bot.ensure_ready()
     available = {item["collection"] for item in bot.get_uploaded_files_list()}
     allowed = file_catalog.allowed_collections(principal, available)
     return StreamingResponse(
-        bot.stream_answer(body.question, principal, allowed_collections=allowed),
+        bot.stream_answer(
+            body.question,
+            principal,
+            allowed_collections=allowed,
+            trace_id=trace_id,
+        ),
         media_type="text/plain; charset=utf-8", headers=stream_headers,
     )
 

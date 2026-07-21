@@ -110,13 +110,38 @@ class TestHealth(ApiBase):
         r = self.client.get("/health")
         self.assertEqual(r.status_code, 200)
         body = r.json()
-        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["status"], "ready")
+        self.assertTrue(body["index_ready"])
         self.assertEqual(body["knowledge_chunks"], 3)
         self.assertEqual(body["uploaded_files"], 1)
+        self.assertTrue(body["index_version"])
 
     def test_timing_header_present(self):
         r = self.client.get("/health")
         self.assertIn("X-Process-Time", r.headers)
+
+    def test_cold_start_reports_not_ready_and_rejects_chat(self):
+        from app.chatbot import IUGChatbot
+        from app.sessions import SessionStore
+
+        cold_bot = IUGChatbot(sessions=SessionStore())
+        cold_bot._readiness_state = "starting"
+        cold_client = TestClient(create_app(bot=cold_bot))
+        cold_client.__enter__()
+        self.addCleanup(cold_client.__exit__, None, None, None)
+
+        state = cold_client.get("/health")
+        self.assertEqual(state.status_code, 200)
+        self.assertEqual(state.json()["status"], "starting")
+        self.assertFalse(state.json()["index_ready"])
+
+        response = cold_client.post(
+            "/api/chat/guest", json={"question": "كم كلية؟"}
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"], "SERVICE_NOT_READY"
+        )
 
 
 class TestChat(ApiBase):
@@ -178,6 +203,7 @@ class TestChat(ApiBase):
                              headers=self.auth("12345"))
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.headers["content-type"].startswith("text/plain"))
+        self.assertRegex(r.headers["x-trace-id"], r"^[0-9a-f]{32}$")
         self.assertEqual(r.text, "إجابة")            # three chunks reassembled
         self.assertIn("12345", self.bot.history)     # identity from token
 
@@ -308,6 +334,16 @@ class TestSessions(ApiBase):
         self.client.post("/api/chat/student", json={"question": "سري"}, headers=self.auth("s1"))
         r = self.client.get("/api/sessions/me/history", headers=self.auth("s2"))
         self.assertEqual(r.json()["count"], 0)  # s2 never sees s1's history
+
+    def test_clear_failure_is_503_not_a_false_success(self):
+        with patch.object(self.bot, "clear_history", return_value=False):
+            response = self.client.delete(
+                "/api/sessions/me/history", headers=self.auth("s1")
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"], "SERVICE_UNAVAILABLE"
+        )
 
 
 class TestErrorEnvelope(ApiBase):

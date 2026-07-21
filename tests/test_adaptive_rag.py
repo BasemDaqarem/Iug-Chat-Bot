@@ -5,11 +5,20 @@ import numpy as np
 
 from app import config, query_rewrite, rerank
 from app.chunking import build_contextual_uploaded_chunk_records
-from app.conversation_frame import build_query_plan
+from app.conversation_frame import (
+    CONTEXT_ASSISTANT_REFERENCE,
+    CONTEXT_AMBIGUOUS,
+    CONTEXT_CORRECTION,
+    CONTEXT_FOLLOWUP,
+    CONTEXT_INDEPENDENT,
+    build_query_plan,
+)
 from app.domain_router import route_query
 from app.evidence_contract import build_evidence_contract, missing_field_query
 from app.prompts import PromptContext, PromptRoute, build_system_prompt
 from app.retrieval import hybrid_candidates
+from app.rag_agent import plan_rag_actions
+from app.uploaded_files import UploadedFilesStore
 
 
 def _turn(user: str) -> dict:
@@ -37,6 +46,35 @@ def test_latest_user_correction_wins_for_branch_and_rate():
     assert frame.rate == 85
     assert "أدبي" in plan.standalone_query
     assert "85%" in plan.standalone_query
+
+
+def test_independent_question_does_not_inherit_old_academic_constraints():
+    history = [_turn("معدلي 85% وفرعي علمي، ما التخصصات؟")]
+    frame, plan = build_query_plan("من رئيس الجامعة؟", history)
+    assert frame.context_mode == CONTEXT_INDEPENDENT
+    assert frame.branch is None
+    assert frame.rate is None
+    assert "85" not in plan.standalone_query
+
+
+def test_context_modes_cover_followup_correction_and_missing_anchor():
+    history = [_turn("ما برامج كلية الهندسة؟")]
+    followup, _ = build_query_plan("وما رسومها؟", history)
+    correction, _ = build_query_plan("لا أقصد الهندسة، بل الطب", history)
+    ambiguous, _ = build_query_plan("وما رسومها؟", [])
+    assert followup.context_mode == CONTEXT_FOLLOWUP
+    assert correction.context_mode == CONTEXT_CORRECTION
+    assert ambiguous.context_mode == CONTEXT_AMBIGUOUS
+
+
+def test_explicit_previous_answer_reference_has_its_own_context_mode():
+    history = [_turn("ما رسوم التأجيل؟")]
+    frame, plan = build_query_plan("وضح إجابتك السابقة", history)
+    assert frame.context_mode == CONTEXT_ASSISTANT_REFERENCE
+    assert frame.followup is True
+    assert "رسوم التاجيل" in query_rewrite.positive_query(
+        plan.standalone_query
+    )
 
 
 def test_scientific_subjects_do_not_imply_science_branch():
@@ -98,6 +136,23 @@ def test_evidence_contract_detects_degree_conflict():
     assert contract.sufficient is False
 
 
+def test_evidence_contract_requires_exact_link_and_entity_bound_fee():
+    frame, plan = build_query_plan("ما رابط بوابة الطالب؟", [])
+    contract = build_evidence_contract(
+        plan, frame, ["[ملف: دليل]\nرابط البوابة محفوظ في link_id فقط"]
+    )
+    assert "link" in contract.missing_fields
+
+    fee_frame, fee_plan = build_query_plan("كم رسوم ساعة الطب؟", [])
+    fee_contract = build_evidence_contract(
+        fee_plan,
+        fee_frame,
+        ["[ملف: رسوم]\nرسوم ساعة التمريض 22 ديناراً"],
+    )
+    assert "fee" in fee_contract.missing_fields
+    assert fee_contract.entity_supported is False
+
+
 def test_domain_router_uses_structured_plus_rag_without_answering():
     frame, plan = build_query_plan("كم سعر ساعة الطب؟", [])
     route = route_query(plan, frame)
@@ -105,6 +160,23 @@ def test_domain_router_uses_structured_plus_rag_without_answering():
     assert route.structured_first is True
     # Router is a plan only; final generation remains the LLM's job.
     assert not hasattr(route, "answer")
+
+
+def test_bounded_agent_selects_tools_and_hard_limits_retries():
+    frame, plan = build_query_plan("وما رابطها؟", [_turn("ما هي بوابة الطالب؟")])
+    route = route_query(plan, frame)
+    agent = plan_rag_actions(
+        plan,
+        frame,
+        route,
+        has_authoritative_evidence=False,
+        safety_directive=False,
+    )
+    assert agent.use_hybrid_retrieval is True
+    assert agent.use_parent_expansion is True
+    assert agent.allow_evidence_retry is True
+    assert agent.max_retrieval_attempts == 2
+    assert "evidence_retry" in agent.tools
 
 
 def test_hierarchical_chunks_keep_parent_context_and_stable_ids():
@@ -123,6 +195,25 @@ def test_hierarchical_chunks_keep_parent_context_and_stable_ids():
     children = [r for r in first if r.kind.startswith("child:")]
     assert all("كلية الهندسة" in r.text for r in children)
     assert len({r.parent_id for r in children}) == 1
+
+
+def test_parent_expansion_adds_overview_and_nearest_sibling():
+    docs = [{
+        "college": "كلية الهندسة",
+        "degree": "بكالوريوس",
+        "programs": [
+            {"name": "هندسة الحاسوب", "fee": 28},
+            {"name": "الهندسة المدنية", "fee": 28},
+        ],
+    }]
+    store = UploadedFilesStore()
+    records = build_contextual_uploaded_chunk_records(docs, "رسوم الهندسة")
+    store._chunk_records["رسوم الهندسة"] = records
+    selected = [next(r.text for r in records if "هندسة الحاسوب" in r.text)]
+    expanded, added = store.expand_parent_chunks(selected, max_additions=2)
+    assert added == 2
+    assert any("النوع: overview" in chunk for chunk in expanded)
+    assert any("الهندسة المدنية" in chunk for chunk in expanded)
 
 
 def test_hybrid_candidates_preserve_scores_and_do_not_force_weak_tail():

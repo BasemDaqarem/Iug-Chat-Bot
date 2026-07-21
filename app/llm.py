@@ -47,9 +47,12 @@ def _base_payload(
             {"role": "user",   "content": user_message},
         ],
         "temperature":      config.LLM_TEMPERATURE,
+        "top_p":            config.LLM_TOP_P,
         "max_tokens":       max_tokens or config.LLM_MAX_TOKENS,
         "reasoning_effort": config.LLM_REASONING_EFFORT,
     }
+    if config.LLM_SEED is not None:
+        payload["seed"] = config.LLM_SEED
     if config.CHAT_PROVIDER_SORT and "openrouter.ai" in config.CHAT_API_URL:
         payload["provider"] = {"sort": config.CHAT_PROVIDER_SORT}
     return payload

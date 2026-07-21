@@ -27,7 +27,14 @@ log = get_logger("index_store")
 INDEX_COLLECTION = "embedding_index"
 
 
-def _fingerprint(chunks: List[str], model: str) -> str:
+def fingerprint(chunks: List[str], model: str | None = None) -> str:
+    """Stable content version for an exact model + ordered chunk set.
+
+    Besides validating persisted matrices, the same value is exposed to
+    readiness/trace metadata so two inconsistent answers can be compared
+    against the exact corpus version that produced them.
+    """
+    model = model or config.EMBED_MODEL
     h = hashlib.sha256()
     h.update(model.encode("utf-8"))
     for c in chunks:
@@ -61,7 +68,7 @@ def _disk_load(name: str, chunks: List[str], model: str) -> Optional[np.ndarray]
     try:
         with open(meta, encoding="utf-8") as f:
             info = json.load(f)
-        if info.get("fingerprint") != _fingerprint(chunks, model):
+        if info.get("fingerprint") != fingerprint(chunks, model):
             return None
         arr = np.load(npy)
         return arr if len(arr) == len(chunks) else None
@@ -75,7 +82,7 @@ def _disk_save(name: str, chunks: List[str], index: np.ndarray, model: str) -> N
     np.save(npy, index)
     with open(meta, "w", encoding="utf-8") as f:
         json.dump({"name": name, "model": model, "count": len(chunks),
-                   "fingerprint": _fingerprint(chunks, model)}, f, ensure_ascii=False)
+                   "fingerprint": fingerprint(chunks, model)}, f, ensure_ascii=False)
 
 
 # ── mongo backend ─────────────────────────────────────────────────────────
@@ -88,7 +95,7 @@ def _index_col():
 def _mongo_load(name: str, chunks: List[str], model: str) -> Optional[np.ndarray]:
     try:
         doc = _index_col().find_one({"_id": name})
-        if not doc or doc.get("fingerprint") != _fingerprint(chunks, model):
+        if not doc or doc.get("fingerprint") != fingerprint(chunks, model):
             return None
         arr = _from_bytes(doc["npy"])
         return arr if len(arr) == len(chunks) else None
@@ -102,7 +109,7 @@ def _mongo_save(name: str, chunks: List[str], index: np.ndarray, model: str) -> 
         {"$set": {
             "model": model,
             "count": len(chunks),
-            "fingerprint": _fingerprint(chunks, model),
+            "fingerprint": fingerprint(chunks, model),
             "npy": _to_bytes(index),
         }},
         upsert=True,

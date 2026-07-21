@@ -19,6 +19,10 @@ from app import query_rewrite
 from app.text_norm import normalize_arabic
 
 _PERCENT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*[%٪]")
+_MONEY_RE = re.compile(
+    r"([0-9٠-٩۰-۹]+(?:[.,][0-9٠-٩۰-۹]+)?)\s*"
+    r"(دينار(?:اً|ا)?|شيكل(?:اً|ا)?|دولار(?:اً|ا)?)"
+)
 _GRAD_TERMS = ("ماجستير", "الماجستير", "دكتوراه", "الدكتوراه", "اطروحه", "أطروحة")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>{}\[\]\"'`]+", re.IGNORECASE)
 _EMAIL_RE = re.compile(
@@ -97,6 +101,169 @@ def unsupported_percentages(answer: str, sources: Iterable[str]) -> List[str]:
         if digits not in blob and digits.split(".")[0] not in blob:
             orphans.append(m.group(0))
     return orphans
+
+
+def _canonical_amount(value: str) -> str:
+    translated = value.translate(_DIGIT_TRANSLATION).replace(",", ".")
+    try:
+        return f"{float(translated):g}"
+    except ValueError:
+        return translated
+
+
+def _canonical_currency(value: str) -> str:
+    norm = normalize_arabic(value)
+    for currency in ("دينار", "شيكل", "دولار"):
+        if currency in norm:
+            return currency
+    return norm
+
+
+def unsupported_money_amounts(
+    answer: str,
+    sources: Iterable[str],
+    *,
+    question: str = "",
+    entity_terms: Iterable[str] = (),
+) -> List[str]:
+    """Currency amounts must occur in evidence for the requested entity.
+
+    Arithmetic totals are allowed when the answer visibly shows a formula;
+    the validator targets quoted fees/prices, not transparent calculations.
+    """
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in ("رسوم", "سعر", "تكلف", "مبلغ")):
+        return []
+    normalized_entities = [
+        normalize_arabic(term) for term in entity_terms if str(term).strip()
+    ]
+    source_list = list(sources)
+    unsupported: List[str] = []
+    for match in _MONEY_RE.finditer(answer):
+        line_start = answer.rfind("\n", 0, match.start()) + 1
+        line_end = answer.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(answer)
+        line = answer[line_start:line_end]
+        if any(operator in line for operator in ("=", "+", "×", "*")):
+            continue
+        wanted_amount = _canonical_amount(match.group(1))
+        wanted_currency = _canonical_currency(match.group(2))
+        supported = False
+        for source in source_list:
+            source_matches = list(_MONEY_RE.finditer(source))
+            candidates = [
+                item for item in source_matches
+                if _canonical_amount(item.group(1)) == wanted_amount
+                and _canonical_currency(item.group(2)) == wanted_currency
+            ]
+            if not candidates:
+                continue
+            norm_source = normalize_arabic(source)
+            if not normalized_entities:
+                supported = True
+                break
+            if len(source_matches) == 1 and any(
+                entity in norm_source for entity in normalized_entities
+            ):
+                supported = True
+                break
+            for candidate in candidates:
+                left = max(
+                    source.rfind(separator, 0, candidate.start())
+                    for separator in ("\n", "،", ",", "؛", ";", ".")
+                )
+                right_positions = [
+                    source.find(separator, candidate.end())
+                    for separator in ("\n", "،", ",", "؛", ";", ".")
+                ]
+                right_positions = [position for position in right_positions if position >= 0]
+                right = min(right_positions) if right_positions else len(source)
+                segment = normalize_arabic(source[left + 1:right])
+                entity_scopes_whole_record = any(
+                    norm_source.find(entity) < source_matches[0].start()
+                    for entity in normalized_entities
+                    if norm_source.find(entity) >= 0
+                )
+                if entity_scopes_whole_record or any(
+                    entity in segment for entity in normalized_entities
+                ):
+                    supported = True
+                    break
+            if supported:
+                break
+        if not supported:
+            label = match.group(0)
+            if label not in unsupported:
+                unsupported.append(label)
+    return unsupported
+
+
+_COUNT_TARGETS = {
+    "faculties": ("كليه", "كليات"),
+    "programs": ("برنامج", "برامج", "تخصص", "تخصصات"),
+}
+_COUNT_WORDS = {
+    "تسع": 9, "تسعه": 9, "عشر": 10, "عشره": 10,
+    "احد عشر": 11, "احدى عشره": 11, "احدي عشره": 11,
+    "اثنا عشر": 12, "اثنتا عشره": 12,
+}
+
+
+def _nearby_counts(text: str, target_terms: tuple[str, ...]) -> set[int]:
+    norm = normalize_arabic(text).translate(_DIGIT_TRANSLATION)
+    term_pattern = "|".join(re.escape(term) for term in target_terms)
+    found = {
+        int(match.group(1))
+        for match in re.finditer(rf"(?<!\d)(\d{{1,3}})\s*(?:{term_pattern})", norm)
+    }
+    for word, value in _COUNT_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\s+(?:{term_pattern})", norm):
+            found.add(value)
+    return found
+
+
+def contradicted_requested_count(
+    question: str, answer: str, sources: Iterable[str]
+) -> List[str]:
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in ("كم عدد", "ما عدد", "عددهم")):
+        return []
+    for target_terms in _COUNT_TARGETS.values():
+        if not any(term in norm_question for term in target_terms):
+            continue
+        expected = set()
+        for source in sources:
+            expected.update(_nearby_counts(source, target_terms))
+        claimed = _nearby_counts(answer, target_terms)
+        if len(expected) == 1 and claimed and not claimed <= expected:
+            return [
+                f"العدد المذكور {sorted(claimed)} لا يطابق العدد المسند {sorted(expected)}"
+            ]
+    return []
+
+
+_ABSENCE_MARKS = (
+    "لا يوجد", "لا توجد", "غير موجود", "غير موجوده", "غير متوفر",
+    "غير متوفره", "لا تتوفر", "لم اجد",
+)
+
+
+def false_absence_claim(
+    answer: str,
+    sources: Iterable[str],
+    *,
+    evidence_sufficient: bool | None,
+    retrieval_degraded: bool = False,
+) -> bool:
+    if not evidence_sufficient and not retrieval_degraded:
+        return False
+    norm_answer = normalize_arabic(answer)
+    if not any(mark in norm_answer for mark in _ABSENCE_MARKS):
+        return False
+    norm_sources = normalize_arabic("\n".join(sources))
+    # An explicit negative statement in the evidence may itself be the fact.
+    return not any(mark in norm_sources for mark in _ABSENCE_MARKS)
 
 
 def violated_exclusions(answer: str, excluded: Iterable[str]) -> List[str]:
@@ -519,7 +686,10 @@ def branch_exclusivity_overclaim(
 
 
 def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
-             asked_level: str | None, question: str = "") -> List[str]:
+             asked_level: str | None, question: str = "",
+             entity_terms: Iterable[str] = (),
+             evidence_sufficient: bool | None = None,
+             retrieval_degraded: bool = False) -> List[str]:
     """قائمة مشاكل الجواب بصياغة تعليمات تصحيحية جاهزة للبرومت — فارغة = سليم."""
     source_list = list(sources)
     # السؤال نفسه يسند رقماً كرره المستخدم، لكنه ليس وثيقة تسند رابط اتصال
@@ -536,6 +706,41 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
             + "، ".join(orphans)
             + " — احذفها أو استبدلها بما تسنده المقاطع حرفياً، ولا تخترع نسبة."
         )
+    unsupported_money = unsupported_money_amounts(
+        answer,
+        evidence,
+        question=question,
+        entity_terms=entity_terms,
+    )
+    if unsupported_money:
+        found.append(
+            "ذكرتَ مبلغاً لا يظهر في دليل الكيان المطلوب: "
+            + "، ".join(unsupported_money)
+            + " — استخدم قيمة مرتبطة بالبرنامج/المرحلة نفسها، لا رقماً من سجل مجاور."
+        )
+    count_errors = contradicted_requested_count(question, answer, evidence)
+    if count_errors:
+        found.append(
+            "عدد العناصر في جوابك لا يطابق العدد المسند في الأدلة: "
+            + "؛ ".join(count_errors)
+            + " — راجع العدد والقائمة معاً."
+        )
+    if false_absence_claim(
+        answer,
+        evidence,
+        evidence_sufficient=evidence_sufficient,
+        retrieval_degraded=retrieval_degraded,
+    ):
+        if retrieval_degraded and not evidence_sufficient:
+            found.append(
+                "ادعيتَ أن المعلومة غير موجودة أثناء حالة استرجاع متدهورة — "
+                "قل إنك لا تستطيع تأكيدها حالياً ولا تستخدم نفياً قطعياً."
+            )
+        else:
+            found.append(
+                "ادعيتَ أن المعلومة غير موجودة رغم أن عقد الأدلة عدّها مسندة — "
+                "أجب من الدليل المتاح ولا تستخدم نفياً عاماً."
+            )
     broken = violated_exclusions(answer, excluded)
     if broken:
         found.append(

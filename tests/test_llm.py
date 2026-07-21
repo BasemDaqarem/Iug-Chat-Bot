@@ -63,7 +63,8 @@ class TestChatCompletion(unittest.TestCase):
         self.assertEqual(answer, "الإجابة")  # stripped
         p = captured["payload"]
         self.assertEqual(p["model"], config.CHAT_API_MODEL)
-        self.assertEqual(p["temperature"], 0.05)
+        self.assertEqual(p["temperature"], 0.0)
+        self.assertEqual(p["top_p"], 1.0)
         self.assertEqual(p["max_tokens"], 450)
         self.assertEqual(p["messages"], [
             {"role": "system", "content": "النظام"},

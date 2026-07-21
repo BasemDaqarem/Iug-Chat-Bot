@@ -77,12 +77,29 @@ class TestChatFlows(ChatBase):
         self.assertIn("سياسة خصوصية ملزمة", system)
         self.assertNotIn("سالم", system)
         self.assertEqual(res["source"], "privacy_policy_llm")
+        self.assertNotIn(
+            "سالم",
+            __import__("json").dumps(
+                res["retrieval_metadata"]["diagnostic_trace"],
+                ensure_ascii=False,
+            ),
+        )
 
     def test_history_folds_into_next_prompt(self):
         self._chat("chat", "ما هي رسوم هندسة الحاسوب؟", "sess")
         self._chat("chat", "وماذا عن المساقات؟", "sess")
         user_msg = self.llm_calls[-1]["messages"][1]["content"]
-        self.assertIn("سجل المحادثة السابقة", user_msg)
+        self.assertIn("سياق المستخدم السابق", user_msg)
+        self.assertIn("ما هي رسوم هندسة الحاسوب؟", user_msg)
+        self.assertNotIn("المساعد:", user_msg)
+
+    def test_explicit_answer_explanation_sees_only_latest_answer_as_untrusted(self):
+        self._chat("chat", "ما هي رسوم هندسة الحاسوب؟", "explain-sess")
+        self._chat("chat", "وضح إجابتك السابقة", "explain-sess")
+        user_msg = self.llm_calls[-1]["messages"][1]["content"]
+        self.assertIn("جواب المساعد السابق غير الموثق", user_msg)
+        self.assertIn("إجابة تجريبية من النموذج.", user_msg)
+        self.assertIn("ليس دليلاً جامعياً", user_msg)
 
 
 class TestStudentChat(ChatBase):
@@ -178,7 +195,7 @@ class TestStudentChat(ChatBase):
         """الذاكرة الدلالية: الدور القديم ذو الصلة يُحقن، وغير المرتبط يُستبعد،
         والدور الأحدث يُحقن دائماً، مع التعليمة الملزمة قبل البيانات."""
         import numpy as np
-        from app.sessions import MEMORY_INSTRUCTION
+        from app.sessions import USER_MEMORY_INSTRUCTION
 
         def unit(*xs):
             v = np.asarray(xs, dtype=np.float32)
@@ -195,10 +212,13 @@ class TestStudentChat(ChatBase):
             self._chat("chat_as_student", "كم رسوم هذا الطلب؟", "12345")
 
         user_msg = self.llm_calls[-1]["messages"][1]["content"]
-        self.assertIn(MEMORY_INSTRUCTION, user_msg)
+        self.assertIn(USER_MEMORY_INSTRUCTION, user_msg)
         self.assertIn("سؤال التأجيل القديم", user_msg)   # ذو صلة (cos=1)
         self.assertNotIn("سؤال المنح البعيد", user_msg)  # متعامد → مستبعد
         self.assertIn("أحدث سؤال", user_msg)             # الأحدث دائماً
+        self.assertNotIn("a1", user_msg)                 # أجوبة المساعد لا تعود كدليل
+        self.assertNotIn("a2", user_msg)
+        self.assertNotIn("a3", user_msg)
 
     def test_memory_embedding_stored_once_with_turn(self):
         """متجه السؤال يُخزَّن مع الدور عند الحفظ — لا يُعاد توليده."""
@@ -218,9 +238,12 @@ class TestStudentChat(ChatBase):
              patch("app.embeddings.embed_texts", side_effect=fake_embed), \
              patch("app.auth.find_account",
                    return_value={"student_id": "12345", "profile": self.PROFILE}), \
-             patch.object(self.bot, "_search_all_for_question", return_value=[]), \
-             patch("app.chatbot.stream_completion",
-                   side_effect=lambda s, u: iter(["الرسو", "م ", "10 دنانير"])):
+             patch.object(
+                 self.bot,
+                 "_search_all_for_question",
+                 return_value=["[ملف: الرسوم] رسوم التأجيل 10 دنانير."],
+             ), \
+             patch("app.llm._post_with_retry", return_value="الرسوم 10 دنانير"):
             chunks = list(self.bot.stream_answer(
                 "كم رسوم التأجيل؟", principal, allowed_collections=None))
 
@@ -233,30 +256,34 @@ class TestStudentChat(ChatBase):
         principal = Principal("12345", Role.STUDENT)
         calls = []
 
-        def fake_stream(system, user, **kwargs):
-            calls.append((system, user, kwargs))
-            return iter(["عذراً، هذه البيانات خاصة."])
+        def fake_llm(headers, payload):
+            calls.append(payload)
+            return "عذراً، هذه البيانات خاصة."
 
         with patch("app.embeddings.embed_texts", side_effect=fake_embed), \
-             patch("app.chatbot.stream_completion", side_effect=fake_stream):
+             patch.object(config, "CHAT_API_KEY", "test-key"), \
+             patch("app.llm._post_with_retry", side_effect=fake_llm):
             chunks = list(self.bot.stream_answer(
                 "كم معدل الطالب 67890؟", principal, allowed_collections=None))
         self.assertEqual(len(calls), 1)
-        self.assertIn("سياسة خصوصية", calls[0][0])
+        self.assertIn("سياسة خصوصية", calls[0]["messages"][0]["content"])
         self.assertIn("خاصة", "".join(chunks))
 
     def test_memory_embedding_failure_falls_back_and_still_answers(self):
-        """فشل توليد المتجه لا يكسر الشات: يعود لطيّ آخر الأدوار كما قبل."""
-        self.bot.push_history("12345", "سؤال سابق", "جواب سابق")
+        """فشل التضمين لا يكسر المتابعة ويستخدم كلام المستخدم فقط."""
+        self.bot.push_history(
+            "12345", "ما رسوم تأجيل الفصل؟", "جواب سابق غير موثوق"
+        )
         with patch("app.auth.find_account",
                    return_value={"student_id": "12345", "profile": self.PROFILE}), \
              patch.object(self.bot, "_search_all_for_question", return_value=[]), \
              patch("app.embeddings.embed_query", side_effect=RuntimeError("jina down")):
-            res = self._chat("chat_as_student", "كم رسوم الساعة؟", "12345")
+            res = self._chat("chat_as_student", "وما شروطه؟", "12345")
 
         self.assertEqual(res["answer"], "إجابة تجريبية من النموذج.")  # الشات يعمل
         user_msg = self.llm_calls[-1]["messages"][1]["content"]
-        self.assertIn("سؤال سابق", user_msg)             # fallback يشمل السجل
+        self.assertIn("ما رسوم تأجيل الفصل؟", user_msg)  # fallback يشمل سؤال المستخدم
+        self.assertNotIn("جواب سابق غير موثوق", user_msg)
         # ولا يُخزَّن متجه لهذا الدور (يُحسب لاحقاً عند أول سؤال ناجح تالٍ)
         self.assertNotIn("embedding", self.bot.get_history("12345")[-1])
 
@@ -454,8 +481,12 @@ class TestUploadedChatFlows(ChatBase):
                 client_history=history,
             )
 
-        self.assertTrue(any("الهندسه" in normalize_arabic(q) for q in searches))   # بحث السياق جرى
-        self.assertTrue(any("الهندسه" not in normalize_arabic(q) for q in searches))  # والخام أيضاً
+        self.assertTrue(searches)
+        self.assertTrue(all("الهندسه" not in normalize_arabic(q) for q in searches))
+        self.assertEqual(
+            res["retrieval_metadata"]["query_plan"]["context_mode"],
+            "independent",
+        )
         self.assertEqual(res["top_chunks"][0], "مقطع رئيس الجامعة")  # الخام يتقدم
 
     def test_context_candidate_survives_when_duplicate_is_deep_in_raw_results(self):
@@ -529,8 +560,11 @@ class TestUploadedChatFlows(ChatBase):
         self.assertIn("91", history[0]["assistant"])
         self.assertNotIn("80", history[0]["assistant"])
 
-    def test_failed_exact_answer_retry_uses_safe_non_llm_fallback(self):
-        answers = iter(["رابط النموذج هو admission_application"])
+    def test_failed_exact_answer_retry_uses_safe_llm_fallback(self):
+        answers = iter([
+            "رابط النموذج هو admission_application",
+            "الرابط المباشر غير وارد في الأدلة المتاحة، لذلك لا يمكنني تأكيده.",
+        ])
 
         def fake_llm(headers, payload):
             self.llm_calls.append(payload)
@@ -545,22 +579,29 @@ class TestUploadedChatFlows(ChatBase):
                 "أعطني رابط النموذج نفسه", "exact-fallback-sess"
             )
 
-        self.assertEqual(len(self.llm_calls), 1)
+        self.assertEqual(len(self.llm_calls), 2)
         self.assertNotIn("admission_application", res["answer"])
-        self.assertIn("لا أريد تخمينه", res["answer"])
+        self.assertIn("غير وارد", res["answer"])
         self.assertTrue(
             res["retrieval_metadata"]["answer_check_safety_fallback"]
         )
-        self.assertTrue(
+        self.assertFalse(
             res["retrieval_metadata"]["answer_check_post_retry_issues"]
         )
+        self.assertEqual(res["retrieval_metadata"]["final_answer_origin"], "llm")
+        self.assertEqual(res["retrieval_metadata"]["llm_generation_count"], 2)
 
     def test_source_metadata_gap_names_source_without_borrowing_date(self):
         import time as _time
 
+        answers = iter([
+            "المصدر: internal_scholarships، التاريخ: 2026-07-15.",
+            "المصدر هو internal_scholarships، وتاريخ التحقق غير مذكور في المقطع.",
+        ])
+
         def fake_llm(headers, payload):
             self.llm_calls.append(payload)
-            return "المصدر: internal_scholarships، التاريخ: 2026-07-15."
+            return next(answers)
 
         chunks = [
             "[ملف: internal_scholarships]\n"
@@ -584,10 +625,14 @@ class TestUploadedChatFlows(ChatBase):
                 client_history=history,
             )
 
-        self.assertEqual(len(self.llm_calls), 1)
+        self.assertEqual(len(self.llm_calls), 2)
         self.assertIn("internal_scholarships", res["answer"])
         self.assertIn("تاريخ التحقق غير مذكور", res["answer"])
         self.assertNotIn("2026-07-15", res["answer"])
+        self.assertTrue(
+            res["retrieval_metadata"]["answer_check_safety_fallback"]
+        )
+        self.assertEqual(res["retrieval_metadata"]["final_answer_origin"], "llm")
         self.assertTrue(
             res["retrieval_metadata"]["source_metadata_extracted"]
         )
@@ -678,13 +723,15 @@ class TestUploadedChatFlows(ChatBase):
         self.assertIn("الفرع الحالي: أدبي", user_message)
         self.assertIn("أي فرع أو معدل أقدم", user_message)
         self.assertNotIn("الهندسة والعلوم.", user_message)
-        self.assertIn("لا تعتمد هذه الإجابة السابقة كدليل", user_message)
+        self.assertIn("سياق المستخدم السابق", user_message)
+        self.assertNotIn("المساعد:", user_message)
 
     def test_contextual_exact_lookup_reranks_with_expanded_query(self):
         import time as _time
 
         candidates = [
-            f"[ملف: البوابة] بوابة التعليم الإلكتروني رابط الدخول {i}"
+            f"[ملف: البوابة] بوابة التعليم الإلكتروني رابط الدخول "
+            f"https://elearning.example/{i}"
             for i in range(config.RERANK_CANDIDATES)
         ]
         history = [{

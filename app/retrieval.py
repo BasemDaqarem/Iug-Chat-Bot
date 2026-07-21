@@ -54,13 +54,14 @@ def _trace_hybrid_rank(
     threshold: float,
     rrf_k: int,
     trace_meta: Optional[dict[str, Any]],
+    tie_keys: Optional[list[tuple[str, str, int]]] = None,
 ) -> None:
     sink = _TRACE.get()
     if sink is None:
         return
-    dense_order = np.argsort(dense_scores)[::-1]
+    dense_order = _score_order(dense_scores, tie_keys)
     dense_ranks = {int(idx): rank + 1 for rank, idx in enumerate(dense_order)}
-    lexical_order = np.argsort(lexical_scores)[::-1]
+    lexical_order = _score_order(lexical_scores, tie_keys)
     lexical_ranks = {
         int(idx): rank + 1
         for rank, idx in enumerate(lexical_order)
@@ -130,7 +131,7 @@ def rank_chunks(
         return []
 
     scores = (index @ q_vec).flatten()
-    ranked = np.argsort(scores)[::-1]
+    ranked = _score_order(scores, _candidate_tie_keys(chunks))
 
     results = []
     for idx in ranked[:top_k]:
@@ -147,6 +148,7 @@ def rrf_order(
     dense_scores: np.ndarray,
     lexical_scores: np.ndarray,
     rrf_k: int = None,
+    tie_keys: Optional[list[tuple[str, str, int]]] = None,
 ) -> List[int]:
     """Fuse a dense ranking and a lexical ranking into one ordered list of
     document indices via Reciprocal Rank Fusion:  score(d) = Σ 1/(k + rank).
@@ -156,16 +158,18 @@ def rrf_order(
     k = config.RRF_K if rrf_k is None else rrf_k
     fused: dict = {}
 
-    dense_order = np.argsort(dense_scores)[::-1]
+    dense_order = _score_order(dense_scores, tie_keys)
     for rank, idx in enumerate(dense_order):
         fused[int(idx)] = fused.get(int(idx), 0.0) + 1.0 / (k + rank + 1)
 
-    lexical_order = np.argsort(lexical_scores)[::-1]
+    lexical_order = _score_order(lexical_scores, tie_keys)
     for rank, idx in enumerate(lexical_order):
         if lexical_scores[int(idx)] > 0:
             fused[int(idx)] = fused.get(int(idx), 0.0) + 1.0 / (k + rank + 1)
 
-    return sorted(fused, key=lambda i: fused[i], reverse=True)
+    if tie_keys is None:
+        tie_keys = [("", "", index) for index in range(len(dense_scores))]
+    return sorted(fused, key=lambda i: (-fused[i], tie_keys[i]))
 
 
 def hybrid_rank(
@@ -190,7 +194,10 @@ def hybrid_rank(
         return []
 
     effective_rrf_k = config.RRF_K if rrf_k is None else rrf_k
-    order = rrf_order(dense_scores, lexical_scores, effective_rrf_k)
+    tie_keys = _candidate_tie_keys(chunks)
+    order = rrf_order(
+        dense_scores, lexical_scores, effective_rrf_k, tie_keys=tie_keys
+    )
     _trace_hybrid_rank(
         chunks,
         dense_scores,
@@ -200,6 +207,7 @@ def hybrid_rank(
         threshold,
         effective_rrf_k,
         trace_meta,
+        tie_keys,
     )
 
     results = []
@@ -230,7 +238,11 @@ class RetrievalCandidate:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def as_metadata(self) -> dict[str, Any]:
+        candidate_id = self.chunk_id or hashlib.sha256(
+            self.text.encode("utf-8")
+        ).hexdigest()
         result = asdict(self)
+        result["candidate_id"] = candidate_id
         result["preview"] = self.text[:240]
         result.pop("text", None)
         return result
@@ -240,6 +252,37 @@ _CHUNK_META_RE = re.compile(
     r"^\[ملف:\s*([^\]]+)\]\n"
     r"\[chunk_id:\s*([^|\]]+)\|\s*parent_id:\s*([^|\]]+)"
 )
+
+
+def _candidate_tie_keys(chunks: List[str]) -> list[tuple[str, str, int]]:
+    """Stable source/chunk tie-breakers independent of container ordering."""
+    keys = []
+    for index, text in enumerate(chunks):
+        match = _CHUNK_META_RE.match(text)
+        file_match = _FILE_RE.match(text)
+        source = (
+            match.group(1).strip()
+            if match else file_match.group(1).strip() if file_match else ""
+        )
+        chunk_id = (
+            match.group(2).strip()
+            if match
+            else hashlib.sha256(text.encode("utf-8")).hexdigest()
+        )
+        keys.append((source, chunk_id, index))
+    return keys
+
+
+def _score_order(
+    scores: np.ndarray,
+    tie_keys: Optional[list[tuple[str, str, int]]] = None,
+) -> list[int]:
+    if tie_keys is None:
+        tie_keys = [("", "", index) for index in range(len(scores))]
+    return sorted(
+        range(len(scores)),
+        key=lambda index: (-float(scores[index]), tie_keys[index]),
+    )
 
 
 def hybrid_candidates(
@@ -260,10 +303,11 @@ def hybrid_candidates(
     if n == 0 or dense_scores is None or len(dense_scores) != n:
         return []
     k = config.RRF_K if rrf_k is None else rrf_k
-    order = rrf_order(dense_scores, lexical_scores, k)
-    dense_order = np.argsort(dense_scores)[::-1]
+    tie_keys = _candidate_tie_keys(chunks)
+    order = rrf_order(dense_scores, lexical_scores, k, tie_keys=tie_keys)
+    dense_order = _score_order(dense_scores, tie_keys)
     dense_ranks = {int(idx): rank + 1 for rank, idx in enumerate(dense_order)}
-    lexical_order = np.argsort(lexical_scores)[::-1]
+    lexical_order = _score_order(lexical_scores, tie_keys)
     lexical_ranks = {
         int(idx): rank + 1
         for rank, idx in enumerate(lexical_order)

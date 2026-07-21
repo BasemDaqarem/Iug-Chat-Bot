@@ -1,5 +1,5 @@
 """
-Cache monitoring & manual invalidation.
+Embedding/index-cache monitoring & manual invalidation.
 
 Stats expose ONLY aggregate counters (hits/misses/size) — never cached
 content — so this router leaks nothing sensitive. Manual clear supports the
@@ -34,9 +34,12 @@ def cache_stats(bot: IUGChatbot = Depends(get_bot)) -> CacheStatsResponse:
     "/clear",
     response_model=MessageResponse,
     summary="مسح الكاش يدوياً",
-    description="يُفرغ كاش الإجابات ومتجهات الأسئلة (إبطال يدوي فوري).",
+    description=(
+        "يفرغ متجهات الأسئلة فوراً. حقل كاش الإجابات باقٍ للتوافق فقط "
+        "وحجمه دائماً صفر لأن كل جواب نهائي يولده الـLLM."
+    ),
     dependencies=[Depends(require_admin)],
 )
 def cache_clear(bot: IUGChatbot = Depends(get_bot)) -> MessageResponse:
     bot.clear_caches()
-    return MessageResponse(message="تم مسح الكاش (الإجابات + متجهات الأسئلة).")
+    return MessageResponse(message="تم مسح كاش متجهات الأسئلة.")

@@ -9,6 +9,7 @@ IUGChatbot instance created at startup (lifespan) and shared via app.state.
     create_app(bot=fake)  → tests inject a stub, no Mongo/APIs needed
 """
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -63,7 +64,6 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
             app.state.bot = bot          # injected (tests)
         else:
             instance = IUGChatbot()
-            instance.initialize()        # Mongo + cached embedding indexes
             app.state.bot = instance
             auth_service.ensure_indexes()  # unique account identifiers (finding 9)
             auth_service.ensure_bootstrap_admin(
@@ -71,8 +71,29 @@ def create_app(bot: Optional[IUGChatbot] = None) -> FastAPI:
                 config.ADMIN_BOOTSTRAP_PASSWORD,
                 config.ADMIN_BOOTSTRAP_NAME,
             )
-        log.info("🚀 IUG Chatbot API جاهزة.")
+            instance.begin_initialization()
+
+            async def initialize_rag() -> None:
+                try:
+                    # Building/loading embeddings can take minutes.  Run it in
+                    # a worker so /health is immediately available as
+                    # {status: starting}; chat returns a retryable 503 until
+                    # the complete dense+BM25 generation is published.
+                    await asyncio.to_thread(instance.initialize)
+                    log.info("✅ RAG indexes are ready for chat.")
+                except Exception:
+                    # ``initialize`` has already changed readiness to failed.
+                    # Keep the HTTP health surface alive for diagnosis/retry.
+                    log.exception("❌ RAG background initialization failed.")
+
+            app.state.rag_initialization_task = asyncio.create_task(
+                initialize_rag()
+            )
+        log.info("🚀 IUG Chatbot HTTP API جاهزة؛ حالة RAG متاحة في /health.")
         yield
+        task = getattr(app.state, "rag_initialization_task", None)
+        if task is not None and not task.done():
+            await task
 
     app = FastAPI(
         title="IUG Chatbot API",

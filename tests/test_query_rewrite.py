@@ -296,6 +296,17 @@ class TestExclusions:
     def test_plain_question_has_no_exclusions(self):
         assert qr.extract_exclusions("ما هي رسوم الساعة؟") == []
 
+    def test_answer_constraints_are_not_misread_as_topic_exclusions(self):
+        assert qr.extract_exclusions("لا تذكر مبلغاً بلا مصدر") == []
+        assert qr.extract_exclusions("جاوب بدون ما تضمن النتيجة") == []
+        assert qr.extract_exclusions("مش رقم محفوظ قديم") == []
+        assert qr.extract_exclusions("مش اسم أكاديمي") == []
+
+    def test_specific_home_page_exclusion_keeps_full_phrase(self):
+        assert qr.extract_exclusions("مش الصفحة الرئيسية، بدي رابط النموذج") == [
+            "الصفحه الرييسيه"
+        ]
+
 
 class TestAdmissionIntentInheritance:
     # «وكم للطب؟» بعد نقاش المفاتيح كانت تسقط (Q093)، و«وشو الرسوم؟» يجب

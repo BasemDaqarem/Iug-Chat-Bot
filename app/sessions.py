@@ -13,6 +13,7 @@ make_session_store() picks one from config.SESSION_BACKEND.
 
 import time
 from typing import List, Optional
+from uuid import uuid4
 
 import numpy as np
 
@@ -23,6 +24,22 @@ from app.log import get_logger
 log = get_logger("sessions")
 
 SESSIONS_COLLECTION = "chat_sessions"
+
+
+class TurnStatus:
+    VERIFIED = "verified"
+    PARTIAL = "partial"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    RETRIEVAL_FAILURE = "retrieval_failure"
+    VALIDATION_FAILURE = "validation_failure"
+
+
+LOW_CONFIDENCE_STATUSES = {
+    TurnStatus.PARTIAL,
+    TurnStatus.INSUFFICIENT_EVIDENCE,
+    TurnStatus.RETRIEVAL_FAILURE,
+    TurnStatus.VALIDATION_FAILURE,
+}
 
 
 def _is_guest(sid) -> bool:
@@ -36,6 +53,12 @@ def _is_guest(sid) -> bool:
 MEMORY_INSTRUCTION = (
     "قد يكون سؤال المستخدم مرتبطاً ببيانات المحادثة السابقة أدناه. "
     "راجعها أولاً واستخدمها فقط عند وجود صلة، ثم تابع إلى السياق الرئيسي."
+)
+
+USER_MEMORY_INSTRUCTION = (
+    "السياق التالي مكتوب من المستخدم فقط، وليس دليلاً معرفياً. "
+    "استخدمه لحل الإحالات والقيود في سؤال المتابعة الحالي، ثم استخرج "
+    "الحقائق من أدلة النظام وحدها."
 )
 
 
@@ -102,6 +125,46 @@ def format_memory(turns: list) -> str:
     return f"{MEMORY_INSTRUCTION}\nسجل المحادثة السابقة:\n{body}\n\n"
 
 
+def format_user_memory(turns: list) -> str:
+    """Prompt memory containing user-authored text only.
+
+    Assistant answers remain stored for display/audit, but never re-enter the
+    model as factual context.  This prevents a wrong answer from becoming the
+    premise of the next turn.
+    """
+    if not turns:
+        return ""
+    body = "\n".join(
+        f"المستخدم: {str(turn.get('user') or '').strip()}"
+        for turn in turns
+        if str(turn.get("user") or "").strip()
+    )
+    if not body:
+        return ""
+    return f"{USER_MEMORY_INSTRUCTION}\nسياق المستخدم السابق:\n{body}\n\n"
+
+
+def format_assistant_reference(turn: dict | None) -> str:
+    """Expose one prior answer only for an explicit explain-the-answer turn.
+
+    It is labelled as unverified conversation text, never as university
+    evidence.  All factual re-checking still uses the fresh RAG evidence in the
+    system prompt.
+    """
+    if not turn:
+        return ""
+    user = str(turn.get("user") or "").strip()
+    assistant = str(turn.get("assistant") or "").strip()
+    if not assistant:
+        return format_user_memory([turn])
+    return (
+        "النص التالي جواب سابق طلب المستخدم شرحه. هو نص محادثة غير موثوق "
+        "وليس دليلاً جامعياً؛ اشرحه أو صححه بالرجوع إلى أدلة النظام الحالية.\n"
+        f"سؤال المستخدم السابق: {user}\n"
+        f"جواب المساعد السابق غير الموثق: {assistant}\n\n"
+    )
+
+
 class SessionStore:
     """In-memory history (lost on restart)."""
 
@@ -114,11 +177,23 @@ class SessionStore:
             return []
         return self._sessions.setdefault(sid, [])
 
-    def push(self, sid: str, user: str, assistant: str, embedding=None):
+    def push(
+        self, sid: str, user: str, assistant: str, embedding=None,
+        *, status: str = TurnStatus.VERIFIED,
+        verification: dict | None = None,
+    ):
         if _is_guest(sid):
             return
         h = self.get(sid)
-        turn = {"user": user, "assistant": assistant, "at": time.time()}
+        turn = {
+            "user": user,
+            "assistant": assistant,
+            "status": status,
+            "turn_id": uuid4().hex,
+            "at": time.time(),
+        }
+        if verification:
+            turn["verification"] = dict(verification)
         if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
             turn["embedding"] = np.asarray(embedding).ravel().tolist()
         h.append(turn)
@@ -127,6 +202,7 @@ class SessionStore:
 
     def clear(self, sid: str):
         self._sessions.pop(sid, None)
+        return True
 
     format_for_prompt = staticmethod(_format_for_prompt)
 
@@ -153,10 +229,22 @@ class MongoSessionStore:
             return []
         return (doc or {}).get("turns", [])
 
-    def push(self, sid: str, user: str, assistant: str, embedding=None):
+    def push(
+        self, sid: str, user: str, assistant: str, embedding=None,
+        *, status: str = TurnStatus.VERIFIED,
+        verification: dict | None = None,
+    ):
         if _is_guest(sid):
             return  # anonymous single-use subject → never persisted
-        turn = {"user": user, "assistant": assistant, "at": time.time()}
+        turn = {
+            "user": user,
+            "assistant": assistant,
+            "status": status,
+            "turn_id": uuid4().hex,
+            "at": time.time(),
+        }
+        if verification:
+            turn["verification"] = dict(verification)
         if embedding is not None:  # يُخزَّن مرة واحدة — لا يُعاد حسابه أبداً
             turn["embedding"] = np.asarray(embedding).ravel().tolist()
         try:
@@ -174,8 +262,10 @@ class MongoSessionStore:
     def clear(self, sid: str):
         try:
             self._col().delete_one({"_id": str(sid)})
+            return True
         except Exception as exc:
             log.warning("⚠️ تعذّر مسح سجل الجلسة '%s': %s", sid, exc)
+            return False
 
     format_for_prompt = staticmethod(_format_for_prompt)
 

@@ -4,6 +4,7 @@ build chunks + metadata → build the semantic index → search.
 """
 
 import hashlib
+import json
 
 from typing import List, Optional
 
@@ -49,22 +50,66 @@ class KnowledgeBase:
     def index(self) -> np.ndarray:
         return self._index
 
+    @property
+    def document_count(self) -> int:
+        return sum(len(items) for items in (self._data or {}).values())
+
+    @property
+    def index_version(self) -> str:
+        if self._chunks is None:
+            return "uninitialized"
+        return index_store.fingerprint(self._chunks)
+
+    @property
+    def index_ready(self) -> bool:
+        chunks = self._chunks
+        index = self._index
+        return (
+            chunks is not None
+            and index is not None
+            and len(index) == len(chunks)
+            and self._bm25 is not None
+            and self._bm25_for is chunks
+        )
+
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     def load(self):
         """Load data, build chunks, build semantic index."""
         log.info("⏳ Discovering & loading MongoDB collections …")
-        self._data = self._load_documents()
-        self._chunks, self._chunk_meta = build_chunks(self._data)
-        log.info("✅ Built %d chunks from %d collection(s).", len(self._chunks), len(self._data))
+        data = self._load_documents()
+        chunks, chunk_meta = build_chunks(data)
+        log.info("✅ Built %d chunks from %d collection(s).", len(chunks), len(data))
 
         log.info("⏳ Using embeddings API — model: '%s' …", config.EMBED_MODEL)
         if not config.EMBED_API_KEY:
             raise RuntimeError("❌ EMBED_API_KEY غير موجود في ملف .env — أضف مفتاح خدمة التضمين.")
 
         log.info("⏳ Building semantic index …")
-        self._index = index_store.build_or_load("knowledge_base", self._chunks, build_index)
-        log.info("✅ Semantic index ready — shape: %s", self._index.shape)
+        index = index_store.build_or_load("knowledge_base", chunks, build_index)
+        if len(index) != len(chunks):
+            raise RuntimeError(
+                "❌ فهرس قاعدة المعرفة لا يطابق عدد المقاطع؛ أُوقفت الجاهزية."
+            )
+        bm25 = BM25(chunks)
+        lexical_probe = bm25.scores("الجامعة")
+        if len(lexical_probe) != len(chunks):
+            raise RuntimeError("❌ فشل اختبار warm-up لفهرس BM25.")
+        if chunks:
+            semantic_probe = (index @ index[0].reshape(-1, 1)).flatten()
+            if len(semantic_probe) != len(chunks):
+                raise RuntimeError("❌ فشل اختبار warm-up للفهرس الدلالي.")
+
+        # Publish one complete immutable generation only after embeddings and
+        # lexical indexing both succeeded.  Startup/search can never observe a
+        # new chunk list paired with an old matrix.
+        self._data = data
+        self._chunks = chunks
+        self._chunk_meta = chunk_meta
+        self._index = index
+        self._bm25 = bm25
+        self._bm25_for = chunks
+        log.info("✅ Semantic + BM25 indexes ready — shape: %s", self._index.shape)
 
     @staticmethod
     def _load_documents() -> dict:
@@ -75,13 +120,17 @@ class KnowledgeBase:
         code change required.
         """
         try:
-            names = [
+            names = sorted([
                 n for n in db.list_collection_names()
                 if n not in config.RAG_EXCLUDE_COLLECTIONS
-            ]
+            ])
             data: dict = {}
             for name in names:
                 docs = list(db.get_collection(name).find({}))
+                docs.sort(key=lambda doc: (
+                    str(doc.get("_id", "")),
+                    json.dumps(doc, ensure_ascii=False, sort_keys=True, default=str),
+                ))
                 for doc in docs:
                     if "_id" in doc:
                         doc["_id"] = str(doc["_id"])
