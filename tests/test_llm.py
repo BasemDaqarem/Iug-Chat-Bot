@@ -32,6 +32,15 @@ class FakeResponse:
 
 class TestChatCompletion(unittest.TestCase):
 
+    def setUp(self):
+        # هذه الاختبارات تفحص انتشار خطأ المزوّد الأساسي وحده — نعطّل المزوّد
+        # الاحتياطي (قد يكون مضبوطاً في .env المحمّل) كي لا يبتلع الخطأ.
+        self._fb = patch.object(config, "CHAT_FALLBACK_URL", "")
+        self._fb.start()
+
+    def tearDown(self):
+        self._fb.stop()
+
     def test_missing_api_key_raises(self):
         with patch.object(config, "CHAT_API_KEY", ""):
             with self.assertRaises(RuntimeError) as ctx:
@@ -61,6 +70,19 @@ class TestChatCompletion(unittest.TestCase):
             {"role": "user",   "content": "الرسالة"},
         ])
         self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
+
+    def test_explicit_generation_budget_overrides_default(self):
+        captured = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["max_tokens"] = json["max_tokens"]
+            return FakeResponse(content="تم")
+
+        with patch.object(config, "CHAT_API_KEY", "test-key"), \
+             patch.object(llm.requests, "post", side_effect=fake_post):
+            llm.chat_completion("النظام", "الرسالة", max_tokens=1600)
+
+        self.assertEqual(captured["max_tokens"], 1600)
 
     def test_retries_on_429_then_succeeds(self):
         responses = [FakeResponse(429, headers={"Retry-After": "0"}), FakeResponse(content="تم")]
@@ -145,3 +167,38 @@ class TestChatCompletion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFallbackProvider(unittest.TestCase):
+    """المزوّد الاحتياطي: عند فشل الأساسي بخطأ مزوّد يُعاد الطلب عليه مرة واحدة."""
+
+    def test_fallback_used_when_primary_upstream_fails(self):
+        calls = []
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            calls.append(url)
+            if "primary" in url:
+                return FakeResponse(402, body='{"error":{"message":"limit"}}')
+            return FakeResponse(content="جواب الاحتياطي")
+
+        with patch.object(config, "CHAT_API_KEY", "k"), \
+             patch.object(config, "CHAT_API_URL", "https://primary/x/chat/completions"), \
+             patch.object(config, "CHAT_FALLBACK_URL", "https://fallback/y/chat/completions"), \
+             patch.object(config, "CHAT_FALLBACK_KEY", "fk"), \
+             patch.object(config, "CHAT_FALLBACK_MODEL", "fallback-model"), \
+             patch.object(llm.requests, "post", side_effect=fake_post), \
+             patch.object(llm.time, "sleep"):
+            answer = llm.chat_completion("s", "u")
+
+        self.assertEqual(answer, "جواب الاحتياطي")
+        self.assertTrue(any("primary" in c for c in calls))
+        self.assertTrue(any("fallback" in c for c in calls))
+
+    def test_no_fallback_configured_propagates_error(self):
+        with patch.object(config, "CHAT_API_KEY", "k"), \
+             patch.object(config, "CHAT_FALLBACK_URL", ""), \
+             patch.object(llm.requests, "post",
+                          return_value=FakeResponse(402, body='{"error":{"message":"x"}}')), \
+             patch.object(llm.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                llm.chat_completion("s", "u")

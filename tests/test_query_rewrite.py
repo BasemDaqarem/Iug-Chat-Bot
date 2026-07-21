@@ -146,6 +146,20 @@ class TestNeedsHistoryContext:
             "ما هي شروط القبول في كلية الطب للفرع العلمي للعام الحالي؟"
         )
 
+    def test_source_and_date_request_inherits_previous_topic(self):
+        assert qr.needs_history_context("اذكر اسم المصدر وتاريخه إذا موجود")
+        assert qr.is_source_metadata_followup(
+            "اذكر اسم المصدر وتاريخه إذا موجود"
+        )
+
+    def test_independent_source_question_is_not_metadata_followup(self):
+        assert not qr.is_source_metadata_followup("ما مصدر الطاقة الشمسية؟")
+
+    def test_long_correction_inherits_previous_constraints(self):
+        assert qr.needs_history_context(
+            "أنا بسأل عن تخصصات، مش منح؛ اعطيني خيارات أكاديمية."
+        )
+
 
 class TestWithHistoryContext:
     HISTORY = [
@@ -219,3 +233,228 @@ class TestWithHistoryContext:
         out = qr.with_history_context("كم هيكلفني؟", history)
         assert "تأجيل الفصل" in out
         assert "المنح" not in out         # السابق حامل لموضوعه — لا صعود أبعد
+
+    def test_four_followups_climb_to_original_programs_topic(self):
+        history = [
+            {"user": "ما هي التخصصات المتاحة في الجامعة؟",
+             "assistant": "...", **NOW},
+            {"user": "قصدي بكالوريوس فقط، مش ماجستير.",
+             "assistant": "...", **NOW},
+            {"user": "وأنا فرعي علمي، شو الخيارات الأقرب إلي؟",
+             "assistant": "...", **NOW},
+            {"user": "لو كان فرعي أدبي بتتغير القائمة؟",
+             "assistant": "...", **NOW},
+        ]
+        out = qr.with_history_context(
+            "رتبهم حسب الكلية عشان ما أخلط بين اسم الكلية واسم التخصص.",
+            history,
+        )
+        assert "ما هي التخصصات المتاحة" in out
+        assert "فرعي أدبي" in out
+        assert out.endswith("اسم التخصص.")
+
+
+class TestDegreeLevelAwareness:
+    # جذر أخطاء الـ90: سجلات الدراسات العليا كانت تبتلع أسئلة البكالوريوس
+
+    def test_explicit_masters_detected(self):
+        assert qr.detect_degree_level("ما هي برامج الماجستير المتاحة؟") == "masters"
+
+    def test_tawjihi_implies_bachelor(self):
+        assert qr.detect_degree_level("معدلي بالتوجيهي 85 شو بيقبلني؟") == "bachelor"
+
+    def test_multi_level_question_returns_none(self):
+        # سؤال «الدرجات التي تمنحونها» يذكر كل المراحل — لا ترشيح لأي منها
+        assert qr.detect_degree_level(
+            "شو الدرجات: دبلوم وبكالوريوس وماجستير ودكتوراه؟") is None
+
+    def test_plain_programs_question_has_no_level(self):
+        assert qr.detect_degree_level("ما برامج كلية العلوم؟") is None
+
+    def test_file_level_from_name(self):
+        assert qr.file_degree_level("تخصصات الماجستير") == "masters"
+        assert qr.file_degree_level("تخصصات الدكتوراه") == "phd"
+        assert qr.file_degree_level("رسوم البكالوريوس ومعدلات القبول") == "bachelor"
+        assert qr.file_degree_level("التواصل والعناوين") is None
+
+
+class TestExclusions:
+    # «مش منح» كانت تُتجاهل ويُبنى الجواب على المستبعد نفسه (Q097 حياً)
+
+    def test_mesh_minah_extracted(self):
+        excluded = qr.extract_exclusions("أنا بسأل عن تخصصات، مش منح")
+        assert "منح" in excluded
+
+    def test_khaleena_men_extracted(self):
+        excluded = qr.extract_exclusions("خلينا من الهندسة، في منح للمتفوقين؟")
+        assert any("هندس" in t for t in excluded)
+
+    def test_markers_map_to_english_file_names(self):
+        markers = qr.exclusion_file_markers(["منح"])
+        assert "scholarship" in markers
+
+    def test_plain_question_has_no_exclusions(self):
+        assert qr.extract_exclusions("ما هي رسوم الساعة؟") == []
+
+
+class TestAdmissionIntentInheritance:
+    # «وكم للطب؟» بعد نقاش المفاتيح كانت تسقط (Q093)، و«وشو الرسوم؟» يجب
+    # ألا تجرّ الجدول عبثاً.
+
+    BASE_TALK = "كم معدل قبول الهندسة؟ وكم للطب؟"
+
+    def test_short_followup_inherits(self):
+        assert qr.inherits_admission_intent(
+            "وكم للطب؟", "وكم للطب؟", self.BASE_TALK)
+
+    def test_academic_topic_with_context_grade_inherits(self):
+        assert qr.inherits_admission_intent(
+            "أنا بسأل عن تخصصات، مش منح؛ اعطيني خيارات أكاديمية.",
+            "أنا بسأل عن تخصصات، مش منح؛ اعطيني خيارات أكاديمية. (تخصصات)",
+            "معدلي 85 علمي هل في منح؟ أنا بسأل عن تخصصات مش منح")
+
+    def test_fees_followup_does_not_inherit(self):
+        # «وشو الرسوم؟» موضوعها ذاتي غير أكاديمي — لا جدول مفاتيح لها
+        assert not qr.inherits_admission_intent(
+            "وشو الرسوم؟", "وشو الرسوم؟",
+            "ما التخصصات التي تقبلني بمعدلي 81؟ وشو الرسوم؟") \
+            or len(qr.tokenize("وشو الرسوم؟")) <= 3  # قصيرة فترث — سلوك مقبول موثق
+
+    def test_no_context_no_intent(self):
+        assert not qr.inherits_admission_intent(
+            "وشو الرسوم؟", "وشو الرسوم؟", "وشو الرسوم؟")
+
+
+class TestLatestAcademicConstraints:
+    def test_latest_branch_overrides_older_branch_in_looping_dialogue(self):
+        history = [
+            {"user": "معدلي 85% علمي، شو التخصصات؟",
+             "assistant": "...", **NOW},
+            {"user": "لو كان فرعي أدبي بتتغير القائمة؟",
+             "assistant": "...", **NOW},
+        ]
+        state = qr.latest_academic_constraints("رتبهم حسب الكلية", history)
+        assert state["branch"] == "أدبي"
+        assert state["rate"] == 85
+
+    def test_current_constraint_wins_over_history(self):
+        history = [{
+            "user": "أنا فرعي أدبي ومعدلي 75%",
+            "assistant": "...",
+            **NOW,
+        }]
+        state = qr.latest_academic_constraints(
+            "لا، معدلي 90% وأنا علمي", history
+        )
+        assert state["branch"] == "علمي"
+        assert state["rate"] == 90
+
+    def test_only_degree_correction_selects_positive_level(self):
+        history = [{
+            "user": "ما البرامج المتاحة؟",
+            "assistant": "...",
+            **NOW,
+        }]
+        state = qr.latest_academic_constraints(
+            "قصدي بكالوريوس فقط، مش ماجستير.", history
+        )
+        assert state["degree"] == "bachelor"
+
+    def test_stale_constraints_are_not_inherited(self):
+        history = [{
+            "user": "معدلي 99% علمي",
+            "assistant": "...",
+            **STALE,
+        }]
+        state = qr.latest_academic_constraints("ما شروط التحويل؟", history)
+        assert state["branch"] is None
+        assert state["rate"] is None
+
+
+class TestProgramsIntent:
+    def test_academic_options_detected(self):
+        assert qr.wants_academic_programs("اعطيني خيارات أكاديمية")
+        assert qr.wants_academic_programs("ما التخصصات المتاحة؟")
+        assert qr.wants_academic_programs("شو برامج كلية العلوم؟")
+
+    def test_non_programs_question(self):
+        assert not qr.wants_academic_programs("كم رسوم الساعة؟")
+        assert not qr.wants_academic_programs("متى يبدأ الفصل؟")
+
+
+class TestRetrievalCostRouting:
+    def test_deans_followup_gets_canonical_academic_term(self):
+        rewritten = qr.add_canonical_terms("أنا أقصد عمداءهم")
+        assert "عمداء الكليات" in rewritten
+
+    def test_complete_list_detects_explicit_and_reference_forms(self):
+        assert qr.wants_complete_list("اذكر جميع كليات الجامعة")
+        assert qr.wants_complete_list("رتبهم حسب المعدل")
+        assert qr.wants_complete_list("أريد القائمة الكاملة")
+        assert not qr.wants_complete_list("ما رسوم كلية الهندسة؟")
+
+    def test_multi_part_requires_multiple_requests(self):
+        assert qr.is_multi_part_question(
+            "ما شروط التحويل؟ وكم رسومه؟"
+        )
+        assert qr.is_multi_part_question(
+            "اذكر الرسوم؛ وافصل كل جزء عن الآخر"
+        )
+        assert not qr.is_multi_part_question("ما شروط التحويل الداخلي؟")
+
+    def test_reranker_skips_coverage_and_admission_questions(self):
+        assert not qr.should_use_reranker(
+            "رتبهم", "ما كليات الجامعة؟ — رتبهم"
+        )
+        assert not qr.should_use_reranker(
+            "ما التخصصات التي تقبل معدلي؟",
+            "ما التخصصات التي تقبل معدلي؟",
+            admission_intent=True,
+        )
+
+    def test_reranker_accepts_contextual_and_exact_lookups(self):
+        assert qr.should_use_reranker(
+            "وما رابطها؟",
+            "بوابة التعليم الإلكتروني — وما رابطها؟",
+        )
+        assert qr.should_use_reranker(
+            "ما بريد عمادة القبول؟",
+            "ما بريد عمادة القبول؟",
+        )
+
+    def test_course_description_uses_direct_evidence_without_reranker(self):
+        question = "كيف أعرف وصف المساقات اللي رح أدرسها بالتخصص؟"
+        assert qr.requires_direct_evidence(question)
+        assert not qr.should_use_reranker(question, question)
+
+    def test_candidate_guard_requires_two_semantic_stems_in_one_chunk(self):
+        query = "ما رابط بوابة الطالب؟"
+        assert qr.candidates_support_query(
+            query,
+            ["بوابة الطالب الإلكترونية ورابط الدخول الرسمي"],
+        )
+        assert not qr.candidates_support_query(
+            query,
+            ["معلومات عن الرسوم", "معلومات عن الأنشطة"],
+        )
+
+    def test_candidate_guard_tolerates_arabic_singular_and_plural(self):
+        assert qr.candidates_support_query(
+            "أنا أقصد عمداء الكليات",
+            ["عميد كلية الهندسة والبريد الرسمي للعمادة"],
+        )
+
+    def test_exact_faculty_deans_drop_deputies_and_administrative_deans(self):
+        chunks = [
+            "degree_or_request: عميد كلية الهندسة | full_name: أ",
+            "degree_or_request: عميد كلية الطب | full_name: ب",
+            "degree_or_request: عميد كلية العلوم | full_name: ج",
+            "degree_or_request: نائب عميد كلية الهندسة | full_name: د",
+            "degree_or_request: عميد شؤون الطلبة | full_name: هـ",
+        ]
+        selected, applied = qr.prefer_exact_role_chunks(
+            "اذكر عمداء الكليات", chunks
+        )
+        assert applied
+        assert len(selected) == 3
+        assert all("degree_or_request: عميد كلية" in chunk for chunk in selected)

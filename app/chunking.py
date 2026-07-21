@@ -179,3 +179,128 @@ def build_uploaded_chunks_with_doc_indexes(
 def build_uploaded_chunks(docs: List[dict], collection_name: str) -> List[str]:
     chunks, _doc_indexes = build_uploaded_chunks_with_doc_indexes(docs, collection_name)
     return chunks
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Contextual / hierarchical uploaded-file chunks (pipeline v2)
+# ═════════════════════════════════════════════════════════════════════════
+
+from dataclasses import dataclass, field
+import hashlib
+from typing import Any
+
+
+@dataclass(slots=True)
+class ChunkRecord:
+    """One searchable child with a stable parent relationship."""
+
+    text: str
+    chunk_id: str
+    parent_id: str
+    source: str
+    doc_index: int
+    kind: str
+    parent_text: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _stable_id(*parts: object) -> str:
+    raw = "\x00".join(str(part) for part in parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _contextual_text(
+    collection_name: str,
+    *,
+    chunk_id: str,
+    parent_id: str,
+    kind: str,
+    parent_text: str,
+    child_text: str,
+) -> str:
+    lines = [
+        f"[ملف: {collection_name}]",
+        f"[chunk_id: {chunk_id} | parent_id: {parent_id} | النوع: {kind}]",
+    ]
+    if parent_text:
+        lines.append("سياق الوثيقة الأصلية:")
+        lines.append(parent_text)
+    if child_text and child_text != parent_text:
+        lines.append("المعلومة المحددة:")
+        lines.append(child_text)
+    return "\n".join(lines)
+
+
+def build_contextual_uploaded_chunk_records(
+    docs: List[dict],
+    collection_name: str,
+) -> List[ChunkRecord]:
+    """Build parent/child records without hard-coding a university domain.
+
+    Small flat documents remain one overview record.  Lists of sub-objects are
+    split into children, each carrying the parent's scalar context.  This keeps
+    exact retrieval granularity while preserving enough document context for
+    the LLM and reranker.
+    """
+    records: List[ChunkRecord] = []
+    for doc_index, raw_doc in enumerate(docs):
+        doc = dict(raw_doc)
+        doc.pop("_id", None)
+        doc.pop("__file_meta__", None)
+        if not doc:
+            continue
+
+        parent_id = _stable_id(collection_name, doc_index, "parent")
+        scalars: dict[str, Any] = {}
+        child_groups: dict[str, list[dict]] = {}
+        for key, value in doc.items():
+            if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+                child_groups[key] = value
+            else:
+                scalars[key] = value
+
+        parent_text = "\n".join(flatten_json_to_text(scalars))
+        if parent_text or not child_groups:
+            chunk_id = _stable_id(collection_name, doc_index, "overview")
+            child_text = parent_text or "\n".join(flatten_json_to_text(doc))
+            records.append(ChunkRecord(
+                text=_contextual_text(
+                    collection_name,
+                    chunk_id=chunk_id,
+                    parent_id=parent_id,
+                    kind="overview",
+                    parent_text=parent_text,
+                    child_text=child_text,
+                ),
+                chunk_id=chunk_id,
+                parent_id=parent_id,
+                source=collection_name,
+                doc_index=doc_index,
+                kind="overview",
+                parent_text=parent_text,
+                metadata={"field": None},
+            ))
+
+        for field_name, items in child_groups.items():
+            for item_index, item in enumerate(items):
+                item_text = "\n".join(flatten_json_to_text(item))
+                if not item_text:
+                    continue
+                chunk_id = _stable_id(collection_name, doc_index, field_name, item_index)
+                records.append(ChunkRecord(
+                    text=_contextual_text(
+                        collection_name,
+                        chunk_id=chunk_id,
+                        parent_id=parent_id,
+                        kind=f"child:{field_name}",
+                        parent_text=parent_text,
+                        child_text=item_text,
+                    ),
+                    chunk_id=chunk_id,
+                    parent_id=parent_id,
+                    source=collection_name,
+                    doc_index=doc_index,
+                    kind=f"child:{field_name}",
+                    parent_text=parent_text,
+                    metadata={"field": field_name, "item_index": item_index},
+                ))
+    return records

@@ -2,7 +2,7 @@
 السابقة للسجل) + مذكرة «الأحدث يفوز» عند تعارض المصادر."""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from fastapi.testclient import TestClient
 
@@ -132,7 +132,10 @@ class TestDeleteLeavesNoOrphans(unittest.TestCase):
              patch("app.uploaded_files.index_store.delete") as purge:
             store.delete("ملف")
         # بنفس المفتاح المسبوق الذي خُزّن به — الاسم المجرد ترك يتيمة سابقاً
-        purge.assert_called_once_with("uploaded::ملف")
+        self.assertEqual(
+            purge.call_args_list,
+            [call("uploaded::v1::ملف"), call("uploaded::v2::ملف")],
+        )
         self.assertNotIn("ملف", store._chunks)
 
     def test_ensure_indexes_backfills_legacy_user_id_first(self):

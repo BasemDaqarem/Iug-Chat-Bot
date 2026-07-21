@@ -132,8 +132,9 @@ class ChatResponse(BaseModel):
     source: str = Field(
         default="knowledge_base",
         description=(
-            "مصدر الإجابة: knowledge_base | uploaded_file | uploaded_files_all | "
-            "structured_admission | student_context_rag | trusted_fact"
+            "مصدر مسار الأدلة/التوليد: main_corpus_llm | uploaded_file_llm | "
+            "uploaded_files_all_llm | structured_admission_llm | "
+            "student_context_rag_llm | trusted_fact_llm | privacy_policy_llm"
         ),
     )
 
