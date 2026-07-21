@@ -37,27 +37,53 @@ def _headers() -> dict:
     }
 
 
-def _base_payload(system: str, user_message: str) -> dict:
-    return {
+def _base_payload(
+    system: str, user_message: str, max_tokens: int | None = None
+) -> dict:
+    payload = {
         "model":            config.CHAT_API_MODEL,
         "messages":         [
             {"role": "system", "content": system},
             {"role": "user",   "content": user_message},
         ],
         "temperature":      config.LLM_TEMPERATURE,
-        "max_tokens":       config.LLM_MAX_TOKENS,
+        "max_tokens":       max_tokens or config.LLM_MAX_TOKENS,
         "reasoning_effort": config.LLM_REASONING_EFFORT,
     }
+    if config.CHAT_PROVIDER_SORT and "openrouter.ai" in config.CHAT_API_URL:
+        payload["provider"] = {"sort": config.CHAT_PROVIDER_SORT}
+    return payload
 
 
-def chat_completion(system: str, user_message: str) -> str:
+def chat_completion(
+    system: str, user_message: str, *, max_tokens: int | None = None
+) -> str:
     """One RAG-style completion: Arabic system prompt (context already
-    inlined) + the user's message (history already folded in)."""
+    inlined) + the user's message (history already folded in).
+
+    عند فشل المزوّد الأساسي بخطأ مزوّد (تجاوز حد/429/5xx) وتوفّر مزوّد
+    احتياطي في .env، يُعاد الطلب عليه مرة واحدة تلقائياً — كي لا يسقط سؤال
+    بسبب سقف مفتاح مجاني مؤقت."""
     _require_config()
-    return _post_with_retry(_headers(), _base_payload(system, user_message))
+    try:
+        return _post_with_retry(
+            _headers(), _base_payload(system, user_message, max_tokens)
+        )
+    except UpstreamServiceError:
+        if not (config.CHAT_FALLBACK_URL and config.CHAT_FALLBACK_KEY):
+            raise
+        log.warning("🔁 فشل المزوّد الأساسي — تحويل الطلب للمزوّد الاحتياطي (%s).",
+                    provider_label(config.CHAT_FALLBACK_URL, "الاحتياطي"))
+        headers = {"Authorization": f"Bearer {config.CHAT_FALLBACK_KEY}",
+                   "Content-Type": "application/json"}
+        payload = {**_base_payload(system, user_message, max_tokens),
+                   "model": config.CHAT_FALLBACK_MODEL or config.CHAT_API_MODEL}
+        return _post_with_retry(headers, payload, url=config.CHAT_FALLBACK_URL)
 
 
-def stream_completion(system: str, user_message: str) -> Iterator[str]:
+def stream_completion(
+    system: str, user_message: str, *, max_tokens: int | None = None
+) -> Iterator[str]:
     """Stream the answer token-by-token from an OpenAI-compatible SSE endpoint.
 
     Yields visible-content deltas only. Robust to two real-world quirks proven
@@ -70,7 +96,10 @@ def stream_completion(system: str, user_message: str) -> Iterator[str]:
     """
     _require_config()
     provider = _provider()
-    payload = {**_base_payload(system, user_message), "stream": True}
+    payload = {
+        **_base_payload(system, user_message, max_tokens),
+        "stream": True,
+    }
     try:
         resp = requests.post(
             config.CHAT_API_URL, headers=_headers(), json=payload, stream=True, timeout=60
@@ -114,11 +143,13 @@ def stream_completion(system: str, user_message: str) -> Iterator[str]:
                     yield content
 
 
-def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4) -> str:
-    provider = _provider()
+def _post_with_retry(headers: dict, payload: dict, max_retries: int = 4,
+                     url: str | None = None) -> str:
+    target = url or config.CHAT_API_URL
+    provider = provider_label(target, "خدمة المحادثة")
     for attempt in range(1, max_retries + 1):
         try:
-            resp = requests.post(config.CHAT_API_URL, headers=headers, json=payload, timeout=60)
+            resp = requests.post(target, headers=headers, json=payload, timeout=60)
 
             if resp.status_code == 429:
                 retry_after = resp.headers.get("Retry-After")

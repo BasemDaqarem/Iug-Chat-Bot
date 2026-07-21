@@ -3,6 +3,8 @@ Main RAG corpus lifecycle: discover MongoDB collections → load documents →
 build chunks + metadata → build the semantic index → search.
 """
 
+import hashlib
+
 from typing import List, Optional
 
 import numpy as np
@@ -155,4 +157,17 @@ class KnowledgeBase:
             lexical = np.zeros(allowed.size, dtype=np.float32)
 
         sub_chunks = [self._chunks[i] for i in allowed]
-        return hybrid_rank(sub_chunks, dense, lexical, top_k, threshold)
+        return hybrid_rank(
+            sub_chunks,
+            dense,
+            lexical,
+            top_k,
+            threshold,
+            trace_meta={
+                "scope": "knowledge_base",
+                "query": question,
+                "session_id_hash": hashlib.sha256(
+                    str(session_id).encode("utf-8")
+                ).hexdigest()[:12],
+            },
+        )

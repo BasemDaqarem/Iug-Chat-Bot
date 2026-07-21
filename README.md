@@ -180,3 +180,11 @@ docs/                    ← improvement and test reports
   (`_ALWAYS_EXCLUDE_FROM_RAG`) — it reaches the model only as private context
   for its authenticated owner.
 - Test accounts on the live DB: create them, then **delete them** (auth + session).
+
+## Adaptive RAG v2 — every question reaches the LLM
+
+This version uses a unified prompt builder, deterministic `ConversationFrame` / `QueryPlan`, structured evidence routing, contextual parent-child chunks, score-preserving Dense+BM25+RRF candidates, an evidence contract, and a selective reranker with a circuit breaker.
+
+No trusted-fact, admission, privacy, or final-answer-cache shortcut returns the user-facing answer directly. Deterministic services and retrieval prepare authorized evidence only; every user question reaches the LLM for final wording. Embedding caching remains enabled, while final-answer caching defaults to off (`LLM_ALWAYS_ANSWER=true`, `ANSWER_CACHE_ENABLED=false`).
+
+Current deterministic test result: **411 passed**.

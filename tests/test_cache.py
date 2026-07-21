@@ -95,30 +95,28 @@ class CacheBotBase(unittest.TestCase):
 
 class TestPublicAnswerCache(CacheBotBase):
 
-    def test_public_question_is_cached_and_reused(self):
-        # Two DIFFERENT guest sessions asking the same public question:
-        # the LLM must run once; the second answer comes from the cache.
-        r1 = self._chat("chat", "ما هي رسوم هندسة الحاسوب؟", "guest_A")
-        r2 = self._chat("chat", "ما هي رسوم هندسة الحاسوب؟", "guest_B")
-        self.assertEqual(self.llm_calls, 1)
-        self.assertEqual(r1["answer"], r2["answer"])
-        self.assertEqual(self.bot.cache_stats()["public_answers"]["hits"], 1)
+    def test_public_question_always_reaches_llm(self):
+        first = self._chat("chat", "ما هي رسوم هندسة الحاسوب؟", "guest_A")
+        second = self._chat("chat", "ما هي رسوم هندسة الحاسوب؟", "guest_B")
+        self.assertEqual(self.llm_calls, 2)
+        self.assertTrue(first["retrieval_metadata"]["answer_cache_bypassed"])
+        self.assertTrue(second["retrieval_metadata"]["answer_cache_bypassed"])
+        self.assertEqual(self.bot.cache_stats()["public_answers"]["size"], 0)
 
-    def test_all_files_question_is_cached(self):
+    def test_all_files_question_always_reaches_llm(self):
         self._chat("chat_with_all_files", "كم علامة الرياضيات؟", "gA")
         self._chat("chat_with_all_files", "كم علامة الرياضيات؟", "gB")
-        self.assertEqual(self.llm_calls, 1)
+        self.assertEqual(self.llm_calls, 2)
 
-    def test_upload_invalidates_cache(self):
+    def test_content_change_does_not_enable_answer_cache(self):
         self._chat("chat_with_all_files", "كم علامة الرياضيات؟", "gA")
-        self.assertEqual(self.llm_calls, 1)
-        # a content change must drop stale public answers
         with patch("app.embeddings.embed_texts", side_effect=fake_embed):
             self.bot._uploaded._chunks["ملف_جديد"] = chunking.build_uploaded_chunks(
                 [{"course": "كيمياء", "grade": 70}], "ملف_جديد")
-            self.bot._answer_cache.clear()  # what upload_json_file does internally
+            self.bot._answer_cache.clear()
         self._chat("chat_with_all_files", "كم علامة الرياضيات؟", "gC")
-        self.assertEqual(self.llm_calls, 2)  # regenerated after invalidation
+        self.assertEqual(self.llm_calls, 2)
+        self.assertEqual(self.bot._answer_cache.stats()["size"], 0)
 
 
 class TestPrivateNeverCached(CacheBotBase):

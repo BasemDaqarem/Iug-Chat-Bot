@@ -8,11 +8,111 @@ Two strategies live here:
                     the default retrieval path.
 """
 
-from typing import List, Optional
+import hashlib
+import re
+from contextvars import ContextVar, Token
+from typing import Any, List, Optional
 
 import numpy as np
 
 from app import config
+
+_TRACE: ContextVar[Optional[list[dict[str, Any]]]] = ContextVar(
+    "retrieval_trace", default=None
+)
+_FILE_RE = re.compile(r"^\[ملف:\s*([^\]]+)\]")
+
+
+def begin_trace() -> Token:
+    """Begin request-local retrieval diagnostics.
+
+    ContextVar keeps this safe when the production server handles concurrent
+    requests; callers that do not opt in pay only one cheap `get()`.
+    """
+    return _TRACE.set([])
+
+
+def end_trace(token: Token) -> list[dict[str, Any]]:
+    events = list(_TRACE.get() or [])
+    _TRACE.reset(token)
+    return events
+
+
+def record_trace(event: dict[str, Any]) -> None:
+    """Append non-secret diagnostics to the active request trace, if any."""
+    sink = _TRACE.get()
+    if sink is not None:
+        sink.append(event)
+
+
+def _trace_hybrid_rank(
+    chunks: List[str],
+    dense_scores: np.ndarray,
+    lexical_scores: np.ndarray,
+    order: List[int],
+    top_k: int,
+    threshold: float,
+    rrf_k: int,
+    trace_meta: Optional[dict[str, Any]],
+) -> None:
+    sink = _TRACE.get()
+    if sink is None:
+        return
+    dense_order = np.argsort(dense_scores)[::-1]
+    dense_ranks = {int(idx): rank + 1 for rank, idx in enumerate(dense_order)}
+    lexical_order = np.argsort(lexical_scores)[::-1]
+    lexical_ranks = {
+        int(idx): rank + 1
+        for rank, idx in enumerate(lexical_order)
+        if lexical_scores[int(idx)] > 0
+    }
+    candidates = []
+    for fused_rank, idx in enumerate(order[: max(top_k, 30)], 1):
+        text = chunks[idx]
+        dense_rank = dense_ranks[idx]
+        lexical_rank = lexical_ranks.get(idx)
+        rrf_score = 1.0 / (rrf_k + dense_rank)
+        if lexical_rank is not None:
+            rrf_score += 1.0 / (rrf_k + lexical_rank)
+        file_match = _FILE_RE.match(text)
+        selected = fused_rank <= top_k and (
+            float(dense_scores[idx]) >= threshold
+            or float(lexical_scores[idx]) > 0
+        )
+        candidates.append(
+            {
+                "chunk_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "file": file_match.group(1) if file_match else None,
+                "preview": text[:240],
+                "fused_rank": fused_rank,
+                "rrf_score": round(rrf_score, 8),
+                "dense_rank": dense_rank,
+                "dense_cosine": round(float(dense_scores[idx]), 6),
+                "dense_passed_threshold": bool(dense_scores[idx] >= threshold),
+                "lexical_rank": lexical_rank,
+                "bm25_score": round(float(lexical_scores[idx]), 6),
+                "selected_by_ranker": selected,
+                "selection_channels": [
+                    channel
+                    for channel, present in (
+                        ("dense", dense_scores[idx] >= threshold),
+                        ("bm25", lexical_scores[idx] > 0),
+                    )
+                    if present
+                ],
+            }
+        )
+    sink.append(
+        {
+            **(trace_meta or {}),
+            "strategy": "hybrid_dense_bm25_rrf",
+            "candidate_count": len(chunks),
+            "top_k": top_k,
+            "dense_threshold": threshold,
+            "rrf_k": rrf_k,
+            "candidates": candidates,
+        }
+    )
 
 
 def rank_chunks(
@@ -75,6 +175,7 @@ def hybrid_rank(
     top_k: int,
     threshold: float,
     rrf_k: int = None,
+    trace_meta: Optional[dict[str, Any]] = None,
 ) -> List[str]:
     """Return the top-K chunk texts by fused dense+lexical relevance.
 
@@ -88,7 +189,18 @@ def hybrid_rank(
     if n == 0 or dense_scores is None or len(dense_scores) != n:
         return []
 
-    order = rrf_order(dense_scores, lexical_scores, rrf_k)
+    effective_rrf_k = config.RRF_K if rrf_k is None else rrf_k
+    order = rrf_order(dense_scores, lexical_scores, effective_rrf_k)
+    _trace_hybrid_rank(
+        chunks,
+        dense_scores,
+        lexical_scores,
+        order,
+        top_k,
+        threshold,
+        effective_rrf_k,
+        trace_meta,
+    )
 
     results = []
     for idx in order[:top_k]:
@@ -99,3 +211,99 @@ def hybrid_rank(
         results.append(chunks[order[0]])
 
     return results
+
+# ── Candidate-rich interface (pipeline v2) ────────────────────────────────
+from dataclasses import asdict, dataclass, field
+
+
+@dataclass(slots=True)
+class RetrievalCandidate:
+    text: str
+    original_index: int
+    dense_score: float
+    bm25_score: float
+    rrf_score: float
+    fused_rank: int
+    source: str | None = None
+    chunk_id: str | None = None
+    parent_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_metadata(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["preview"] = self.text[:240]
+        result.pop("text", None)
+        return result
+
+
+_CHUNK_META_RE = re.compile(
+    r"^\[ملف:\s*([^\]]+)\]\n"
+    r"\[chunk_id:\s*([^|\]]+)\|\s*parent_id:\s*([^|\]]+)"
+)
+
+
+def hybrid_candidates(
+    chunks: List[str],
+    dense_scores: np.ndarray,
+    lexical_scores: np.ndarray,
+    top_k: int,
+    threshold: float,
+    rrf_k: int | None = None,
+) -> List[RetrievalCandidate]:
+    """Return score-preserving candidates; ``hybrid_rank`` remains the adapter.
+
+    Unlike the old text-only return value, this allows routing, reranking,
+    coverage checks, and diagnostics to reason about confidence without
+    re-running retrieval.
+    """
+    n = len(chunks)
+    if n == 0 or dense_scores is None or len(dense_scores) != n:
+        return []
+    k = config.RRF_K if rrf_k is None else rrf_k
+    order = rrf_order(dense_scores, lexical_scores, k)
+    dense_order = np.argsort(dense_scores)[::-1]
+    dense_ranks = {int(idx): rank + 1 for rank, idx in enumerate(dense_order)}
+    lexical_order = np.argsort(lexical_scores)[::-1]
+    lexical_ranks = {
+        int(idx): rank + 1
+        for rank, idx in enumerate(lexical_order)
+        if lexical_scores[int(idx)] > 0
+    }
+    result: List[RetrievalCandidate] = []
+    for fused_rank, idx in enumerate(order, 1):
+        dense_value = float(dense_scores[idx])
+        lexical_value = float(lexical_scores[idx])
+        if dense_value < threshold and lexical_value <= 0:
+            continue
+        dense_rank = dense_ranks[idx]
+        lexical_rank = lexical_ranks.get(idx)
+        score = 1.0 / (k + dense_rank)
+        if lexical_rank is not None:
+            score += 1.0 / (k + lexical_rank)
+        text = chunks[idx]
+        match = _CHUNK_META_RE.match(text)
+        file_match = _FILE_RE.match(text)
+        result.append(RetrievalCandidate(
+            text=text,
+            original_index=int(idx),
+            dense_score=dense_value,
+            bm25_score=lexical_value,
+            rrf_score=score,
+            fused_rank=fused_rank,
+            source=(match.group(1).strip() if match else (
+                file_match.group(1) if file_match else None
+            )),
+            chunk_id=match.group(2).strip() if match else None,
+            parent_id=match.group(3).strip() if match else None,
+            metadata={
+                "dense_passed_threshold": dense_value >= threshold,
+                "lexical_matched": lexical_value > 0,
+            },
+        ))
+        if len(result) >= top_k:
+            break
+    # Pipeline v2 deliberately returns no candidate when neither semantic
+    # nor lexical confidence passes.  The evidence contract then tells the LLM
+    # that the corpus does not support a factual answer instead of forcing an
+    # unrelated nearest neighbour into the prompt.
+    return result
