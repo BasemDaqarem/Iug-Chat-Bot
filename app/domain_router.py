@@ -8,6 +8,7 @@ block for the final LLM call.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import re
 from typing import Any
 
 from app.conversation_frame import ConversationFrame, QueryPlan
@@ -20,9 +21,14 @@ _STRUCTURED_DOMAINS = {
 }
 
 _LINE_MARKERS = {
-    "fees": ("رسوم", "fee", "دينار", "سعر الساعة", "ثوابت"),
+    "fees": (
+        "رسوم", "fee", "amount", "currency", "دينار", "سعر الساعة", "ثوابت",
+    ),
     "admissions": ("قبول", "min_high_school", "الحد الأدنى", "الفروع"),
-    "scholarships": ("منحة", "منح", "إعفاء", "coverage", "eligib"),
+    "scholarships": (
+        "منحة", "منح", "إعفاء", "coverage", "eligib",
+        "discount_percentage", "retention_gpa_required",
+    ),
     "programs": ("برنامج", "تخصص", "مسار", "كلية", "قسم"),
     "deadlines": ("موعد", "تاريخ", "start", "end", "الفصل"),
     "documents": ("وثيقة", "وثائق", "أوراق", "شهادة", "تصديق"),
@@ -30,6 +36,27 @@ _LINE_MARKERS = {
     "people": ("full_name", "الاسم", "عميد", "رئيس", "مدير"),
     "procedures": ("خطوة", "إجراء", "طلب", "تسجيل", "دفع"),
 }
+
+_IDENTITY_AND_SCOPE_KEYS = {
+    "program_name", "program", "specialization", "major", "department",
+    "faculty", "faculty_name", "college", "degree_or_request", "resource_name",
+    "full_name", "course", "course_name", "course_code", "subject", "id",
+    "title", "topic", "case", "service_type", "category", "document_type",
+    "branch", "degree", "level", "currency", "semester",
+    "اسم_البرنامج", "البرنامج", "التخصص", "القسم", "الكليه", "الكلية",
+    "الاسم", "المورد", "المساق", "اسم_المساق", "رمز_المساق", "الماده",
+    "المادة", "الموضوع", "العنوان", "الحاله", "الحالة", "التصنيف",
+    "الفئه", "الفئة", "الفرع", "المرحله", "المرحلة", "العمله", "العملة",
+}
+
+
+def _is_identity_or_scope_line(line: str) -> bool:
+    if ":" not in line:
+        return False
+    key = normalize_arabic(line.split(":", 1)[0]).lower().replace(" ", "_")
+    key = re.sub(r"\[\d+\]", "", key)
+    leaf = key.rsplit(".", 1)[-1]
+    return leaf in _IDENTITY_AND_SCOPE_KEYS
 
 
 @dataclass(slots=True)
@@ -91,7 +118,10 @@ def project_structured_evidence(
         header = lines[0] if lines and lines[0].startswith("[ملف:") else "[مصدر غير مسمى]"
         matching = [
             line for line in lines[1:]
-            if any(marker in normalize_arabic(line) for marker in markers)
+            if (
+                _is_identity_or_scope_line(line)
+                or any(marker in normalize_arabic(line) for marker in markers)
+            )
         ]
         if matching:
             selected.append(header + "\n" + "\n".join(matching))

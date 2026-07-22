@@ -215,6 +215,16 @@ class ManagedFileCreateRequest(BaseModel):
     owner_id: Optional[str] = Field(default=None, max_length=40)
 
 
+class FilePreflightRequest(BaseModel):
+    collection: str = Field(..., pattern=r"^[^.$/\\]{2,100}$")
+    documents: Union[List[dict], dict]
+
+
+class FileConflictResolutionRequest(BaseModel):
+    decision: Literal["keep_existing", "prefer_incoming"]
+    conflict_ids: List[str] = Field(default_factory=list, max_length=500)
+
+
 class FileAccessUpdateRequest(BaseModel):
     classification: Literal[
         "university_public", "student_records", "employee_internal",

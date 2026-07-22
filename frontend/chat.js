@@ -32,7 +32,7 @@
   };
 
   const role = auth.role || "student";
-  const MAX_QUESTIONS = 10;
+  const MAX_QUESTIONS = 20;
   const questionCountKey = `iug_question_count:${role}:${auth.user_id || auth.student_id || "guest"}`;
   let completedQuestions = 0;
   let limitResetInProgress = false;
@@ -170,7 +170,7 @@
     el.input.disabled = true;
     el.send.disabled = true;
     bubble(
-      "وصلت إلى 10 أسئلة. سأمسح سجل هذه المحادثة وأبدأ محادثة جديدة.",
+      "وصلت إلى 20 سؤالًا. سأمسح سجل هذه المحادثة وأبدأ محادثة جديدة.",
       "bot"
     );
     try {

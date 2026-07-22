@@ -152,7 +152,19 @@ PIPELINE_V2_ENABLED = os.getenv("PIPELINE_V2_ENABLED", "true").lower() == "true"
 # this non-configurable avoids a production environment silently falling back
 # to a different retrieval path than the one evaluated in tests.
 AGENTIC_RAG_ENABLED = True
-RAG_PIPELINE_VERSION = "bounded-agentic-rag-v3"
+RAG_PIPELINE_VERSION = "bounded-agentic-rag-v4"
+SEMANTIC_RAG_ENABLED = os.getenv(
+    "SEMANTIC_RAG_ENABLED", "true"
+).lower() == "true"
+SEMANTIC_PLANNER_MAX_TOKENS = int(os.getenv(
+    "SEMANTIC_PLANNER_MAX_TOKENS", "700"
+))
+SEMANTIC_VERIFIER_MAX_TOKENS = int(os.getenv(
+    "SEMANTIC_VERIFIER_MAX_TOKENS", "650"
+))
+SEMANTIC_VERIFIER_MAX_EVIDENCE_CHARS = int(os.getenv(
+    "SEMANTIC_VERIFIER_MAX_EVIDENCE_CHARS", "14000"
+))
 HIERARCHICAL_CHUNKING_ENABLED = os.getenv(
     "HIERARCHICAL_CHUNKING_ENABLED", "true"
 ).lower() == "true"
@@ -164,7 +176,7 @@ PARENT_EXPANSION_MAX_CHUNKS = int(
 )
 # Product/UI invariant.  ``frontend/chat.js`` mirrors this value because the
 # static client is intentionally build-tool free.
-CHAT_TURN_LIMIT = 10
+CHAT_TURN_LIMIT = 20
 # الذاكرة القصيرة للمحادثة: آخر 5 أدوار فقط (FIFO)، كل دور يحمل متجه سؤاله
 # المحسوب مرة واحدة عند الحفظ — لا يُعاد حسابه أبداً.
 MAX_HISTORY = 5

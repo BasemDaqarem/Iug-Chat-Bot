@@ -9,6 +9,8 @@ from app.api.schemas import (
     EmployeeCreateRequest,
     EmployeeUpdateRequest,
     FileAccessUpdateRequest,
+    FileConflictResolutionRequest,
+    FilePreflightRequest,
     ManagedFileCreateRequest,
 )
 from app.chatbot import IUGChatbot
@@ -86,6 +88,30 @@ def create_file(
         raise BadRequestError(str(exc))
     audit.record(principal.subject, principal.role.value, "file.draft", item.get("file_id", ""))
     return item
+
+
+@router.post("/files/preflight")
+def preflight_file(
+    body: FilePreflightRequest,
+    principal: Principal = Depends(require_admin_role),
+) -> dict:
+    try:
+        report = file_catalog.preflight(body.collection, body.documents)
+    except ValueError as exc:
+        raise BadRequestError(str(exc))
+    except RuntimeError as exc:
+        raise UpstreamError(str(exc))
+    audit.record(
+        principal.subject,
+        principal.role.value,
+        "file.preflight",
+        body.collection,
+        {
+            "duplicates": report.get("exact_duplicate_count", 0),
+            "conflicts": report.get("conflict_count", 0),
+        },
+    )
+    return report
 
 
 def _resolve_managed(file_id: str, actor_id: str) -> dict | None:
@@ -167,10 +193,45 @@ def process_file(
         item = file_catalog.process(file_id, principal.subject)
     except ValueError as exc:
         raise BadRequestError(str(exc))
+    except RuntimeError as exc:
+        raise UpstreamError(str(exc))
     if item is None:
         raise NotFoundError("الملف غير موجود.")
     audit.record(principal.subject, principal.role.value, "file.process", file_id)
     return item
+
+
+@router.post("/files/{file_id}/resolve-conflicts")
+def resolve_file_conflicts(
+    file_id: str,
+    body: FileConflictResolutionRequest,
+    principal: Principal = Depends(require_admin_role),
+) -> dict:
+    try:
+        result = file_catalog.resolve_conflicts(
+            file_id,
+            principal.subject,
+            decision=body.decision,
+            conflict_ids=body.conflict_ids,
+        )
+    except ValueError as exc:
+        raise BadRequestError(str(exc))
+    except RuntimeError as exc:
+        raise UpstreamError(str(exc))
+    if result is None:
+        raise NotFoundError("الملف أو نسخته الأخيرة غير موجودة.")
+    audit.record(
+        principal.subject,
+        principal.role.value,
+        "file.resolve_conflicts",
+        file_id,
+        {
+            "decision": body.decision,
+            "conflict_ids": body.conflict_ids,
+            "resolved_count": result.get("resolved_count", 0),
+        },
+    )
+    return result
 
 
 @router.post("/files/{file_id}/publish")
@@ -181,6 +242,8 @@ def publish_file(
 ) -> dict:
     try:
         item = file_catalog.publish(file_id, bot, principal.subject)
+    except file_catalog.UnresolvedDataConflictError as exc:
+        raise ConflictError(str(exc))
     except ValueError as exc:
         raise BadRequestError(str(exc))
     except RuntimeError as exc:
@@ -200,6 +263,8 @@ def rollback_file(
 ) -> dict:
     try:
         item = file_catalog.publish(file_id, bot, principal.subject, version=version)
+    except file_catalog.UnresolvedDataConflictError as exc:
+        raise ConflictError(str(exc))
     except ValueError as exc:
         raise BadRequestError(str(exc))
     except RuntimeError as exc:

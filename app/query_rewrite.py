@@ -118,6 +118,10 @@ _BRANCH_MARKS = ("علمي", "ادبي", "شرعي", "صناعي", "تجاري",
 # كلية وإن خلت من كلمة تخصص/كلية (ثبت Q093 — الصيغة الطويلة لا ترث بالقصر)
 _FACULTY_MARKS = ("طب", "هندس", "تمريض", "قباله", "علوم", "اداب", "تربيه",
                   "شريعه", "اقتصاد", "تكنولوجيا", "اصول الدين")
+_ELIGIBILITY_MARKS = (
+    "احقق", "يحقق", "يقبلني", "تقبلني", "يمكنني", "يمكنك",
+    "التقديم", "دخول", "قبولي", "الخيارات الممكنه", "الخيارات المتاحه",
+)
 
 
 def has_admission_intent(query: str) -> bool:
@@ -125,11 +129,23 @@ def has_admission_intent(query: str) -> bool:
     تحتاج تغطية استرجاع أعرض من المعتاد (كل جدول المفاتيح لا مقطعاً منه)."""
     norm = normalize_arabic(query)
     tokens = set(tokenize(query))
+    # «معدل استمرار منحة تخصص الكيمياء» uses معدل + تخصص but asks about
+    # scholarship retention, not high-school admission.  Without an explicit
+    # admission verb/term, do not inject the full admissions table.
+    if (
+        any(mark in norm for mark in ("منحه", "منح", "اعفاء"))
+        and "استمرار" in norm
+        and not any(mark in norm for mark in ("قبول", "يقبل", "تقبل", "ثانويه"))
+    ):
+        return False
     if tokens & _CANONICAL_TERMS["معدلات القبول"]:
         return True
     grade_admission = (
         any(g in norm for g in _GRADE_MARKS)
-        and any(m in norm for m in _MAJOR_MARKS)
+        and any(
+            m in norm
+            for m in _MAJOR_MARKS + _FACULTY_MARKS + _ELIGIBILITY_MARKS
+        )
     )
     branch_admission = (
         any(branch in norm for branch in _BRANCH_MARKS)
@@ -553,6 +569,8 @@ _ANAPHORA_TOKENS = {
     "كمان", "ايضا", "برضه", "برضو",                     # "also …" continuations
     "اذكرهم", "اذكرها", "اذكرهما", "عددهم", "عدديهم",   # «اذكرهم/عدّدهم» — enumerate-them
     "رتبهم", "رتبها", "سمهم", "سميهم", "وضحهم", "اشرحهم",
+    "الثانيه", "والثانيه", "الثالثه", "والثالثه",
+    "واحد", "واحده", "فيهم", "منهم",
     "القايمه",                                            # «تتغير القائمة؟»
     "الرقم", "رقمه", "رقمها", "مكانه", "مكانها",
     "شروطه", "شروطها", "رسومه", "رسومها", "رابطه", "رابطها",
@@ -560,6 +578,10 @@ _ANAPHORA_TOKENS = {
 }
 _COMMON_REFERENCE_TOKENS = {
     "الخطه", "الموعد", "الرابط", "القائمه", "المبلغ", "الجهه",
+    "الفرع", "والفرع", "الحد", "والحد", "الادنى",
+    # «شو مفتاحه؟» إحالة حين يكون السؤال قصيراً فقط.  وجود الكلمة داخل
+    # سؤال مكتمل («سعر هندسة الحاسوب وما المفتاح؟») لا يجعله تابعاً.
+    "المفتاح", "مفتاحه", "مفتاحها",
 }
 # A follow-up is usually VERY short («كم هيكلفني؟», «وللماجستير؟»); at 4+
 # tokens questions usually carry their own topic and prepending the previous
@@ -599,7 +621,7 @@ def is_pure_reference(question: str) -> bool:
 # «وكم للطب؟ بدي مصدر حديث مش رقم محفوظ قديم» (9 كلمات) لا تُسلسل فيضيع
 # موضوع «معدل القبول» من الدور السابق (ثبت Q093).
 _CONTINUATION_STARTS = {
-    "وكم", "وشو", "وايش", "وماذا", "وهل", "ومين", "ومن", "ومتى", "ووين",
+    "وكم", "وما", "وشو", "وايش", "وماذا", "وهل", "ومين", "ومن", "ومتى", "ووين",
     "وأين", "واين", "وكيف", "وليش", "ولماذا", "وانا", "وأنا",
 }
 _CONTINUATION_PREFIXES = ("ولل", "وبالنسبه")
@@ -651,6 +673,8 @@ def needs_history_context(question: str) -> bool:
     if tokens[0] in _CONTINUATION_STARTS or any(
         tokens[0].startswith(prefix) for prefix in _CONTINUATION_PREFIXES
     ):
+        return True
+    if tokens[0] == "طيب" and len(tokens) <= 7:
         return True
     if has_reference_tokens(question):
         return True

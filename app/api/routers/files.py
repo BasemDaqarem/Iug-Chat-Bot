@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 from app import file_catalog
 from app.api.deps import get_bot, get_current_principal, require_admin
-from app.api.errors import BadRequestError, NotFoundError, UpstreamError
+from app.api.errors import BadRequestError, ConflictError, NotFoundError, UpstreamError
 from app.api.schemas import (
     ErrorResponse,
     FileInfo,
@@ -75,6 +75,12 @@ def upload_file(
     if not re.fullmatch(r"[^.$/\\]{2,100}", collection_name):
         raise BadRequestError("اسم الملف غير صالح: 2-100 حرفاً وبدون . أو $ أو / أو \\")
     try:
+        report = file_catalog.preflight(collection_name, body.documents)
+        if report.get("unresolved_conflict_count", 0):
+            raise ConflictError(
+                "يتضمن الرفع تعارضات مع بيانات منشورة. استخدم مسار الملفات "
+                "المدار ثم resolve-conflicts قبل النشر."
+            )
         result = bot.upload_json_file(collection_name, body.documents)
     except ValueError as exc:
         raise BadRequestError(str(exc))

@@ -92,9 +92,13 @@
     if (!files.length) { const tr = el("tr"); const td = el("td", "empty", "لا توجد ملفات مطابقة."); td.colSpan = 6; tr.append(td); body.append(tr); return; }
     files.forEach(file => {
       const tr = el("tr"); const acts = el("div", "actions"); const id = file.file_id;
+      const unresolved = Number(file.preflight?.unresolved_conflict_count || 0);
       // كل ملف — حتى القديم السابق للسجل — له إجراءات: الخادم يتبنّاه تلقائياً.
       if (file.status === "draft") acts.append(action("معالجة ونشر", "process_publish", id));
-      if (file.status === "ready") acts.append(action("نشر", "publish", id));
+      if (file.status === "ready" && unresolved) {
+        acts.append(action("الاحتفاظ بالموجود", "keep_existing", id));
+        acts.append(action("اعتماد الجديد", "prefer_incoming", id));
+      } else if (file.status === "ready") acts.append(action("نشر", "publish", id));
       if (file.status !== "archived") {
         acts.append(action("الصلاحيات", "access", id));
         acts.append(action("حذف", "delete", id, true));
@@ -142,8 +146,18 @@
     try {
       if (b.dataset.action === "process_publish") {
         const item = await api(`/api/admin/files/${file.file_id}/process`, { method:"POST" });
-        await api(`/api/admin/files/${item.file_id || file.file_id}/publish`, { method:"POST" });
-        toast("تمت المعالجة والنشر — الملف أصبح متاحاً حسب صلاحياته.");
+        if (Number(item.preflight?.unresolved_conflict_count || 0)) {
+          toast("اكتملت المعالجة، لكن النشر متوقف حتى تختار قرار التعارض.", true);
+        } else {
+          await api(`/api/admin/files/${item.file_id || file.file_id}/publish`, { method:"POST" });
+          toast("تمت المعالجة والنشر — الملف أصبح متاحاً حسب صلاحياته.");
+        }
+      }
+      if (["keep_existing", "prefer_incoming"].includes(b.dataset.action)) {
+        await api(`/api/admin/files/${file.file_id}/resolve-conflicts`, {
+          method:"POST", body:JSON.stringify({ decision:b.dataset.action, conflict_ids:[] })
+        });
+        toast(b.dataset.action === "keep_existing" ? "سُجل قرار الاحتفاظ بالموجود؛ يمكنك النشر الآن." : "سُجل قرار اعتماد الجديد؛ يمكنك النشر الآن.");
       }
       if (b.dataset.action === "publish") { await api(`/api/admin/files/${file.file_id}/publish`, { method:"POST" }); toast("تم النشر."); }
       if (b.dataset.action === "delete") { const r = await api(`/api/admin/files/${encodeURIComponent(file.file_id)}`, { method:"DELETE" }); toast(r.message || "تم الحذف."); }
@@ -213,9 +227,22 @@
     const roles = $$('input[name=roles]:checked', form).map(x => x.value);
     if (!roles.length) { msg.textContent = "اختر دوراً واحداً على الأقل."; return; }
     const publishNow = f.publish_now.checked;
+    let conflictDecision = null;
     button.disabled = true;
     button.textContent = publishNow ? "جارٍ الرفع والنشر…" : "جارٍ الحفظ…";
     try {
+      const preflight = await api("/api/admin/files/preflight", { method:"POST", body:JSON.stringify({
+        collection: f.collection.value.trim(), documents,
+      }) });
+      if (Number(preflight.conflict_count || 0)) {
+        const choice = prompt(
+          `وُجد ${preflight.conflict_count} تعارضاً. اكتب «الموجود» للاحتفاظ بالبيانات الحالية، أو «الجديد» لاعتماد الملف الوارد. اتركه فارغاً لإلغاء الرفع.`
+        );
+        if (!choice) return;
+        if (choice.trim() === "الموجود") conflictDecision = "keep_existing";
+        else if (choice.trim() === "الجديد") conflictDecision = "prefer_incoming";
+        else { msg.textContent = "القرار غير معروف؛ اكتب الموجود أو الجديد."; return; }
+      }
       const item = await api("/api/admin/files", { method:"POST", body:JSON.stringify({
         collection: f.collection.value.trim(),
         documents,
@@ -226,6 +253,9 @@
       if (publishNow) {
         // معالجة + نشر متتاليان: تُبنى المقاطع والفهرس وتسري الصلاحيات فوراً.
         await api(`/api/admin/files/${item.file_id}/process`, { method:"POST" });
+        if (conflictDecision) await api(`/api/admin/files/${item.file_id}/resolve-conflicts`, {
+          method:"POST", body:JSON.stringify({ decision:conflictDecision, conflict_ids:[] })
+        });
         await api(`/api/admin/files/${item.file_id}/publish`, { method:"POST" });
         toast("رُفع الملف ونُشر — صار ضمن معرفة البوت حسب صلاحياته.");
       } else {

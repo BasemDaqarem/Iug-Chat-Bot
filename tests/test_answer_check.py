@@ -8,6 +8,87 @@ from app import answer_check, config, rerank
 
 class TestAnswerCheck(unittest.TestCase):
 
+    def test_internal_metadata_and_invented_ui_status_are_rejected(self):
+        issues = answer_check.problems(
+            "افتح الصفحة (link_id: get_student_number) ثم ستظهر حالة «مُرسل».",
+            sources=["راجع بوابة طلب الالتحاق أو القبول والتسجيل."],
+            excluded=[], asked_level=None,
+            question="كيف أتأكد أن طلب الالتحاق انرسل؟",
+        )
+        self.assertTrue(any("ميتاداتا" in issue for issue in issues))
+        self.assertTrue(any("حالة واجهة" in issue for issue in issues))
+
+    def test_supported_quoted_procedure_label_passes(self):
+        issues = answer_check.problems(
+            "اختر «طباعة وثائق الطالب».",
+            sources=["من القبول والتسجيل اختر طباعة وثائق الطالب."],
+            excluded=[], asked_level=None,
+            question="كيف أستخرج الشهادة؟",
+        )
+        self.assertEqual(issues, [])
+
+        invented = answer_check.problems(
+            "راجع شاشة «تأكيد الطلب» أو «النتيجة».",
+            sources=["راجع الطلب في البوابة أو تواصل مع القبول والتسجيل."],
+            excluded=[], asked_level=None,
+            question="كيف أتأكد أن الطلب انحفظ؟",
+        )
+        self.assertTrue(any("حالة واجهة" in issue for issue in invented))
+
+    def test_unsubstantiated_application_status_is_rejected(self):
+        issues = answer_check.problems(
+            "ستظهر رسالة تأكيد ثم تصبح الحالة مقبول أو قيد المراجعة.",
+            sources=["يمكن تعبئة طلب الالتحاق إلكترونياً."],
+            excluded=[], asked_level=None,
+            question="كيف أتأكد أن الطلب انحفظ وانرسل إذا لم يظهر تأكيد واضح؟",
+        )
+        self.assertTrue(any("حالة واجهة غير موثقة" in issue for issue in issues))
+
+        safe = answer_check.problems(
+            "لا يمكن تأكيد أن الطلب تم حفظه من علامة واجهة موثقة؛ راجعه في البوابة.",
+            sources=["يمكن تعبئة طلب الالتحاق إلكترونياً."],
+            excluded=[], asked_level=None,
+            question="كيف أتأكد أن الطلب انحفظ وانرسل إذا لم يظهر تأكيد واضح؟",
+        )
+        self.assertEqual(safe, [])
+
+    def test_program_cutoff_answer_must_include_known_branch_scope(self):
+        source = (
+            "علم الحاسوب | البرامج: علم الحاسوب | الفروع: علمي | "
+            "الحد الأدنى: 65%"
+        )
+        missing = answer_check.problems(
+            "الحد الأدنى لعلم الحاسوب 65%.",
+            sources=[source], excluded=[], asked_level=None,
+            question="والحد الأدنى؟", entity_terms=["علم", "الحاسوب"],
+        )
+        self.assertTrue(any("نطاق فرع" in issue for issue in missing))
+        complete = answer_check.problems(
+            "الحد الأدنى لعلم الحاسوب 65%، والفرع العلمي فقط.",
+            sources=[source], excluded=[], asked_level=None,
+            question="والحد الأدنى؟", entity_terms=["علم", "الحاسوب"],
+        )
+        self.assertEqual(complete, [])
+
+        eligibility = answer_check.problems(
+            "لا، معدلك 79% أقل من مفتاح الهندسة 80%.",
+            sources=["الهندسة | الفروع: علمي | الحد الأدنى: 80%"],
+            excluded=[], asked_level=None,
+            question="معدلي 79 علمي؛ هل أحقق مفتاح الهندسة؟",
+            entity_terms=["الهندسة"],
+        )
+        self.assertFalse(any("نطاق فرع" in issue for issue in eligibility))
+
+    def test_direct_programs_accept_you_phrase_is_not_preliminary_eligibility(self):
+        issues = answer_check.problems(
+            "معدلك 89% أعلى من المفتاح 80%، وكل هذه البرامج تقبلك.",
+            sources=["الهندسة | الفروع: علمي | الحد الأدنى: 80%"],
+            excluded=[], asked_level=None,
+            question="معدلي 89 علمي؛ شو وضعي للهندسة؟",
+            entity_terms=["الهندسة"],
+        )
+        self.assertTrue(any("ضمان قبول" in issue for issue in issues))
+
     def test_orphan_percentage_detected(self):
         # النمط القاتل: «الطب 80%» ولا وجود لـ80 في المصادر
         issues = answer_check.problems(
@@ -47,6 +128,74 @@ class TestAnswerCheck(unittest.TestCase):
             excluded=[], asked_level=None,
             question="كم رسوم ساعة الطب؟", entity_terms=["الطب"])
         self.assertEqual(issues, [])
+
+    def test_structured_amount_is_accepted_only_for_matching_fee_entity(self):
+        source = (
+            "service_type: رسوم التخرج\n"
+            "degree_or_request: دبلوم عالي\namount: 75.0"
+        )
+        issues = answer_check.problems(
+            "رسوم تخرج الدبلوم العالي 75 ديناراً.",
+            sources=[source], excluded=[], asked_level=None,
+            question="كم رسوم تخرج الدبلوم العالي؟",
+            entity_terms=["تخرج", "الدبلوم", "العالي"],
+        )
+        self.assertEqual(issues, [])
+
+        wrong = answer_check.problems(
+            "رسوم تخرج الدبلوم المهني 75 ديناراً.",
+            sources=[source], excluded=[], asked_level=None,
+            question="كم رسوم تخرج الدبلوم المهني؟",
+            entity_terms=["المهني"],
+        )
+        self.assertTrue(any("مبلغاً" in issue for issue in wrong))
+
+        card = answer_check.problems(
+            "رسم البطاقة الجامعية 5 دنانير.",
+            sources=[
+                "service_type: طلبات الطلبة\n"
+                "degree_or_request: رسوم بطاقة جامعية\namount: 5.0"
+            ],
+            excluded=[], asked_level=None,
+            question="كم رسم البطاقة الجامعية؟",
+            entity_terms=["البطاقة", "الجامعية"],
+        )
+        self.assertEqual(card, [])
+
+        nested = answer_check.problems(
+            "سعر ساعة المرحلة الأساسية 8 دنانير.",
+            sources=[
+                "programs[3].program_name: المرحلة الأساسية\n"
+                "programs[3].credit_hour_fee: 8"
+            ],
+            excluded=[], asked_level=None,
+            question="كم سعر ساعة المرحلة الأساسية؟",
+            entity_terms=["المرحلة", "الأساسية"],
+        )
+        self.assertEqual(nested, [])
+
+        multi_record = (
+            "programs[0].program_name: تعليم اللغة العربية\n"
+            "programs[0].credit_hour_fee: 13\n"
+            "programs[3].program_name: المرحلة الأساسية\n"
+            "programs[3].credit_hour_fee: 8"
+        )
+        nested_multi = answer_check.problems(
+            "سعر ساعة المرحلة الأساسية 8 دنانير.",
+            sources=[multi_record], excluded=[], asked_level=None,
+            question="كم سعر ساعة المرحلة الأساسية؟",
+            entity_terms=["المرحلة", "الأساسية"],
+        )
+        self.assertEqual(nested_multi, [])
+        wrong_nested_multi = answer_check.problems(
+            "سعر ساعة المرحلة الأساسية 13 ديناراً.",
+            sources=[multi_record], excluded=[], asked_level=None,
+            question="كم سعر ساعة المرحلة الأساسية؟",
+            entity_terms=["المرحلة", "الأساسية"],
+        )
+        self.assertTrue(
+            any("مبلغاً" in issue for issue in wrong_nested_multi)
+        )
 
     def test_wrong_explicit_faculty_count_is_rejected(self):
         issues = answer_check.problems(
@@ -212,6 +361,113 @@ class TestAnswerCheck(unittest.TestCase):
             question="معدلي 85% أدبي، ما الخيارات؟")
         self.assertTrue(any("كلية الاقتصاد" in issue for issue in issues))
 
+    def test_single_program_eligibility_does_not_require_all_faculties(self):
+        issues = answer_check.problems(
+            "لا، معدلك 79% أقل من مفتاح هندسة الحاسوب 80%.",
+            sources=[
+                "جدول مفاتيح القبول\n"
+                "الهندسة | البرامج: هندسة الحاسوب | الفروع: علمي | "
+                "الحد الأدنى: 80%\n"
+                "الآداب | البرامج: اللغة العربية | الفروع: أدبي | "
+                "الحد الأدنى: 65%",
+                "معدل الثانوية الذي ذكره المستخدم: 79%",
+            ],
+            excluded=[], asked_level=None,
+            question="معدلي 79 علمي، هل أحقق مفتاح هندسة الحاسوب؟",
+        )
+        self.assertFalse(any("أسقطتَ كليات" in issue for issue in issues))
+
+    def test_named_program_eligibility_must_apply_branch_and_rate_together(self):
+        sources = [
+            "التربية | البرامج: تعليم العلوم، الحاسوب وأساليب تدريسه | "
+            "الفروع: علمي، أدبي، شرعي | الحد الأدنى: 65%",
+            "الهندسة | البرامج: هندسة الحاسوب | الفروع: علمي | "
+            "الحد الأدنى: 80%",
+            "الفرع الحالي الذي ذكره المستخدم: أدبي",
+        ]
+        kwargs = dict(
+            sources=sources,
+            excluded=[],
+            asked_level=None,
+            question="معدلي 85 أدبي، هل يتيح لي التقديم لهندسة الحاسوب؟",
+            entity_terms=["هندسة", "الحاسوب"],
+        )
+        wrong = answer_check.problems(
+            "نعم، يسمح لك لأن معدلك 85% أعلى من المفتاح 80%.", **kwargs
+        )
+        correct = answer_check.problems(
+            "البرنامج للفرع العلمي فقط؛ لذلك لا يمكنك التقديم وفرعك أدبي.",
+            **kwargs,
+        )
+        cautious = answer_check.problems(
+            "البيانات لا تذكر الفرع الأدبي ضمن الفروع المسموحة؛ المذكور علمي فقط.",
+            **kwargs,
+        )
+        self.assertTrue(any("قيد فرع الثانوية" in issue for issue in wrong))
+        self.assertFalse(any("قيد فرع الثانوية" in issue for issue in correct))
+        self.assertFalse(any("قيد فرع الثانوية" in issue for issue in cautious))
+
+    def test_eligibility_answer_cannot_mix_yes_with_failed_condition(self):
+        issues = answer_check.problems(
+            "نعم، يحق لك التقديم، لكن معدلك لا يحقق شرط القبول.",
+            sources=["التمريض | الفروع: أدبي | الحد الأدنى: 80%"],
+            excluded=[], asked_level=None,
+            question="معدلي 79 أدبي، هل أحقق شرط التمريض؟",
+            entity_terms=["التمريض"],
+        )
+        self.assertTrue(any("قراراً واحداً" in issue for issue in issues))
+
+    def test_branch_check_does_not_merge_words_from_different_programs(self):
+        issues = answer_check.problems(
+            "نعم، معدلك أعلى من 65% ولذلك يمكنك التقديم لعلم الحاسوب.",
+            sources=[
+                "التربية | البرامج: تعليم العلوم، الحاسوب وأساليب تدريسه | "
+                "الفروع: علمي، أدبي، شرعي | الحد الأدنى: 65%",
+                "تكنولوجيا المعلومات | البرامج: علم الحاسوب، تطوير البرمجيات | "
+                "الفروع: علمي | الحد الأدنى: 65%",
+            ],
+            excluded=[], asked_level=None,
+            question="معدلي 80 أدبي، هل يمكنني التقديم لعلم الحاسوب؟",
+            entity_terms=["علم", "حاسوب"],
+        )
+        self.assertTrue(any("قيد فرع الثانوية" in issue for issue in issues))
+
+    def test_cutoff_eligibility_cannot_guarantee_final_admission(self):
+        kwargs = dict(
+            sources=["التمريض | الفروع: أدبي | الحد الأدنى: 80%"],
+            excluded=[], asked_level=None,
+            question="معدلي 80 أدبي، هل أحقق شرط التمريض مبدئياً؟",
+            entity_terms=["التمريض"],
+        )
+        wrong = answer_check.problems(
+            "نعم مبدئياً، معدلك يساوي 80% وبالتالي يقبلك في البرنامج.",
+            **kwargs,
+        )
+        correct = answer_check.problems(
+            "نعم، تحقق الشرط المبدئي 80%، ولا يضمن ذلك القبول النهائي.",
+            **kwargs,
+        )
+        self.assertTrue(any("ضمان قبول نهائي" in issue for issue in wrong))
+        self.assertFalse(any("ضمان قبول نهائي" in issue for issue in correct))
+
+    def test_competitive_medicine_cutoff_requires_date_and_variability(self):
+        kwargs = dict(
+            sources=[
+                "قبول الطب تنافسي ويتغير كل عام؛ في 2025/2026 كان 91%."
+            ],
+            excluded=[], asked_level=None,
+            question="معدلي 90 علمي، هل الطب مضمون؟",
+            entity_terms=["الطب"],
+        )
+        wrong = answer_check.problems(
+            "مفتاح الطب هو 91%، لذلك القبول غير مضمون.", **kwargs
+        )
+        correct = answer_check.problems(
+            "لا؛ كان المرجع 91% في 2025/2026، وهو تنافسي ومتغير.", **kwargs
+        )
+        self.assertTrue(any("رقم ثابت" in issue for issue in wrong))
+        self.assertFalse(any("رقم ثابت" in issue for issue in correct))
+
     def test_one_missing_admission_faculty_is_accepted_as_good_not_perfect(self):
         issues = answer_check.problems(
             "كلية الآداب: العربية. كلية الاقتصاد: المحاسبة.",
@@ -251,6 +507,36 @@ class TestAnswerCheck(unittest.TestCase):
             excluded=[], asked_level=None,
             question="أعطني رابط طلب الالتحاق نفسه")
         self.assertTrue(any("دليل/خطوات" in issue for issue in issues))
+
+    def test_procedure_answer_cannot_call_guide_url_a_portal(self):
+        url = "https://admission.iugaza.edu.ps/guide/خطوات-تسجيل-طالب-جديد/"
+        issues = answer_check.problems(
+            f"ادخل إلى بوابة طلب الالتحاق عبر الرابط: {url}",
+            sources=[f"title: خطوات تسجيل طالب جديد\nurl: {url}"],
+            excluded=[], asked_level=None,
+            question="اشرح بداية طلب الالتحاق الإلكتروني.",
+        )
+        self.assertTrue(any("دليل/خطوات" in issue for issue in issues))
+
+    def test_foreign_certificate_must_precede_university_number(self):
+        kwargs = dict(
+            sources=[
+                "إذا كانت الشهادة من الخارج أرسلها أولاً لإدخال البيانات، "
+                "وبعدها يحصل الطالب على الرقم الجامعي."
+            ],
+            excluded=[], asked_level=None,
+            question="أنا خارج غزة والمعبر مغلق؛ اشرح بداية طلب الالتحاق الإلكتروني.",
+        )
+        wrong = answer_check.problems(
+            "1. الحصول على الرقم الجامعي. 2. إرسال الشهادة إذا كانت من الخارج.",
+            **kwargs,
+        )
+        correct = answer_check.problems(
+            "إذا كانت الشهادة صادرة من الخارج: أرسل الشهادة أولاً، ثم الحصول على الرقم الجامعي.",
+            **kwargs,
+        )
+        self.assertTrue(any("عكستَ ترتيب" in issue for issue in wrong))
+        self.assertFalse(any("عكستَ ترتيب" in issue for issue in correct))
 
     def test_answer_must_use_latest_active_branch(self):
         issues = answer_check.problems(
@@ -303,6 +589,49 @@ class TestAnswerCheck(unittest.TestCase):
             excluded=[], asked_level=None,
             question="أنا علمي، شو التخصصات المتاحة؟")
         self.assertTrue(any("تقبل العلمي مع فروع أخرى" in issue for issue in issues))
+
+    def test_unresolved_visa_policy_rejects_model_memory(self):
+        issues = answer_check.problems(
+            "تحتاج إلى تأشيرة طالب تصدرها وزارة الخارجية.",
+            sources=[
+                "التصنيف: غير محسوم رسمياً\n"
+                "الإجابة: لا توجد معلومة موثقة عن نوع التأشيرة."
+            ],
+            excluded=[], asked_level=None,
+            question="أي نوع تأشيرة أحتاج لدخول غزة للدراسة؟",
+        )
+        self.assertTrue(any("سياسة دخول/تأشيرة" in issue for issue in issues))
+
+    def test_unresolved_visa_policy_accepts_honest_caveat(self):
+        issues = answer_check.problems(
+            "لا يمكن تأكيد نوع التأشيرة من البيانات الحالية؛ تحقق من الجهات الرسمية.",
+            sources=[
+                "التصنيف: غير محسوم رسمياً\n"
+                "الإجابة: لا توجد معلومة موثقة عن نوع التأشيرة."
+            ],
+            excluded=[], asked_level=None,
+            question="أي نوع تأشيرة أحتاج لدخول غزة للدراسة؟",
+        )
+        self.assertEqual(issues, [])
+
+    def test_paid_application_fee_is_not_answered_from_waiver(self):
+        issues = answer_check.problems(
+            "لا يُسترد المبلغ لأن رسوم الطلب معفاة بالكامل.",
+            sources=["إعفاء الطلبة الجدد من رسوم طلب الالتحاق"],
+            excluded=[], asked_level=None,
+            question="دفعت رسوم طلب الالتحاق ولم أسجل؛ هل أستردها؟",
+        )
+        self.assertTrue(any("حكم استرداد رسوم طلب الالتحاق" in x for x in issues))
+
+    def test_paid_application_fee_honest_policy_gap_passes(self):
+        issues = answer_check.problems(
+            "سياسة الاسترداد غير موثقة في البيانات؛ راجع القبول والتسجيل.",
+            sources=["إعفاء الطلبة الجدد من رسوم طلب الالتحاق"],
+            excluded=[], asked_level=None,
+            question="دفعت رسوم طلب الالتحاق ولم أسجل؛ هل أستردها؟",
+            evidence_sufficient=False,
+        )
+        self.assertEqual(issues, [])
 
 
 class TestReranker(unittest.TestCase):

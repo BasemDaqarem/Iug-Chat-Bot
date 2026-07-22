@@ -26,10 +26,16 @@ from app import (
 )
 from app import rerank as rerank_mod
 from app.conversation_frame import (
+    ClaimRequirement,
+    ConceptResolution,
     CONTEXT_ASSISTANT_REFERENCE,
     CONTEXT_CORRECTION,
     CONTEXT_FOLLOWUP,
     build_query_plan,
+)
+from app.data_quality import (
+    deduplicate_evidence,
+    suppress_rejected_conflict_values,
 )
 from app.evidence_contract import build_evidence_contract, missing_field_query
 from app.domain_router import project_structured_evidence, route_query
@@ -51,8 +57,49 @@ from app.uploaded_files import UploadedFilesStore
 from app.context_builder import build_private_context
 from app.rbac import Principal, Role, prompt_for
 from app.rag_agent import plan_rag_actions
+from app.semantic_rag import (
+    run_semantic_planner,
+    run_semantic_verifier,
+    should_run_semantic_verifier,
+)
 
 log = get_logger("chatbot")
+
+
+def _conflicts_relevant_to_plan(plan, conflicts: list[dict]) -> list[dict]:
+    """Keep only conflicts for the requested field and bound entity.
+
+    Retrieval deliberately keeps neighboring evidence for recall.  A conflict
+    in another program or an unbound synthetic/global projection must not
+    block a claim about a specific program.
+    """
+    relevant = []
+    for conflict in conflicts:
+        field_name = str(conflict.get("canonical_field") or "")
+        conflict_entity = normalize_arabic(
+            str(conflict.get("entity") or "")
+        )
+        for claim in getattr(plan, "claims", []) or []:
+            if field_name != claim.canonical_field:
+                continue
+            claim_entity = normalize_arabic(str(claim.entity or ""))
+            if not claim_entity:
+                relevant.append(conflict)
+                break
+            if not conflict_entity or conflict_entity == "global":
+                continue
+            terms = []
+            for token in claim_entity.split():
+                token = token[1:] if token.startswith("و") and len(token) > 4 else token
+                if token.startswith("ال") and len(token) > 4:
+                    token = token[2:]
+                if len(token) >= 3 and token not in terms:
+                    terms.append(token)
+            comparable_entity = conflict_entity
+            if all(term in comparable_entity for term in terms):
+                relevant.append(conflict)
+                break
+    return list({item["conflict_id"]: item for item in relevant}.values())
 
 
 class IUGChatbot:
@@ -479,9 +526,10 @@ class IUGChatbot:
 {lines}
 
 ⚠️ عند تعارض معلومة (رقم أو رسوم أو شرط) بين مصدرين مما سبق، اعتمد قيمة
-المصدر الأحدث إدخالاً. هذه تواريخ إدخال للنظام للترجيح الداخلي فقط — لا
-تذكرها في إجابتك كأنها تاريخ إصدار المعلومة أو «آخر تحديث للنشرة».
-المصدر مجهول التاريخ يُعامل كالأقدم.
+المصدر الأحدث فقط إذا كان تاريخا المصدرين المتعارضين معروفين وقابلين
+للمقارنة. هذه تواريخ إدخال للنظام للترجيح الداخلي فقط — لا تذكرها في
+إجابتك كأنها تاريخ إصدار المعلومة أو «آخر تحديث للنشرة». إذا كان أحد
+التاريخين مجهولاً فلا تفترض أنه الأقدم؛ صرّح بوجود تعارض يحتاج حسم الإدارة.
 """
 
     @staticmethod
@@ -584,6 +632,184 @@ class IUGChatbot:
                 if len(merged) >= top_k:
                     return merged
         return merged
+
+    def _search_claims_for_plan(
+        self,
+        plan,
+        top_k: int,
+        allowed_collections: set[str] | None = None,
+    ) -> List[str]:
+        """Retrieve a reserved quota for every requested claim.
+
+        One search *wave* may contain several claim queries; it still counts as
+        one bounded retrieval attempt.  Round-robin merging prevents a strong
+        fee match from evicting all admission-cutoff evidence (or vice versa).
+        """
+        claims = list(getattr(plan, "claims", []) or [])
+        if len(claims) <= 1:
+            query = claims[0].retrieval_query if claims else plan.standalone_query
+            return self._search_all_for_question(
+                query, top_k, allowed_collections
+            )
+        quota = max(2, (top_k + len(claims) - 1) // len(claims))
+        candidate_k = max(quota, min(config.RERANK_CANDIDATES, quota * 2))
+        batches = []
+        for claim in claims:
+            values = self._search_all_for_question(
+                claim.retrieval_query,
+                candidate_k,
+                allowed_collections,
+            )
+            if (
+                config.RERANK_ENABLED
+                and len(values) > quota
+                and query_rewrite.candidates_support_query(
+                    claim.retrieval_query, values
+                )
+            ):
+                reordered, status = rerank_mod.rerank_with_status(
+                    claim.retrieval_query, values, quota
+                )
+                if status == "applied":
+                    values = reordered
+            batches.append(values[:quota])
+        merged: List[str] = []
+        seen = set()
+        for position in range(max((len(batch) for batch in batches), default=0)):
+            for batch in batches:
+                if position >= len(batch):
+                    continue
+                chunk = batch[position]
+                if chunk in seen:
+                    continue
+                seen.add(chunk)
+                merged.append(chunk)
+                if len(merged) >= top_k:
+                    return merged
+        return merged
+
+    @staticmethod
+    def _apply_semantic_plan(plan, frame, semantic: dict) -> None:
+        """Merge a planner result without allowing it to drop deterministic claims."""
+        if semantic.get("status") != "applied":
+            return
+        unresolved_norm = {
+            normalize_arabic(value): value for value in plan.unresolved_clauses
+        }
+        existing_by_field = {
+            claim.canonical_field: claim for claim in plan.claims
+        }
+        resolved_surfaces: set[str] = set()
+        for item in semantic.get("claims", []):
+            field_name = item.get("canonical_field")
+            refined_query = str(item.get("refined_query") or "").strip()
+            if field_name in existing_by_field:
+                if refined_query:
+                    existing = existing_by_field[field_name]
+                    existing.retrieval_query = (
+                        existing.retrieval_query
+                        + " ("
+                        + refined_query
+                        + ")"
+                    )
+                continue
+            surface = str(item.get("surface_text") or "").strip()
+            normalized_surface = normalize_arabic(surface)
+            if (
+                not surface
+                or normalized_surface not in unresolved_norm
+                or float(item.get("confidence") or 0) < 0.75
+            ):
+                continue
+            # A new-session bare «المفتاح» remains a clarification even if an
+            # LLM guesses admission.  Semantic planning may resolve it only
+            # when another safely planned claim/context already anchors it.
+            if (
+                field_name == "admission_cutoff"
+                and plan.requires_clarification
+                and not plan.claims
+            ):
+                continue
+            claim = ClaimRequirement(
+                claim_id=f"claim_{len(plan.claims) + 1}",
+                surface_text=surface,
+                canonical_field=field_name,
+                entity=item.get("entity") or frame.reference,
+                scope={
+                    "degree_level": frame.degree_level,
+                    "branch": frame.branch,
+                    "rate": frame.rate,
+                    "transfer_scope": frame.transfer_scope,
+                },
+                answer_type=str(item.get("answer_type") or "text"),
+                time_state=(
+                    "live" if plan.live_policy == "dated_caveat" else "indexed"
+                ),
+                retrieval_query=refined_query or surface,
+                resolution_source="semantic",
+                confidence=float(item.get("confidence") or 0),
+            )
+            plan.claims.append(claim)
+            existing_by_field[field_name] = claim
+            resolved_surfaces.add(normalized_surface)
+        if resolved_surfaces:
+            plan.unresolved_clauses = [
+                value for value in plan.unresolved_clauses
+                if normalize_arabic(value) not in resolved_surfaces
+            ]
+            plan.requires_clarification = bool(
+                plan.unresolved_clauses and not plan.claims
+            )
+            for item in semantic.get("concept_resolutions", []):
+                surface = str(item.get("surface_text") or "").strip()
+                if normalize_arabic(surface) not in resolved_surfaces:
+                    continue
+                try:
+                    confidence = float(item.get("confidence") or 0)
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                plan.concept_resolutions.append(ConceptResolution(
+                    surface_text=surface,
+                    canonical_concept=str(
+                        item.get("canonical_concept") or "unknown"
+                    ),
+                    source="semantic",
+                    confidence=max(0.0, min(1.0, confidence)),
+                    context_used=(
+                        str(item.get("context_used"))
+                        if item.get("context_used") else None
+                    ),
+                ))
+        field_domains = {
+            "fee": "fees", "admission_cutoff": "admissions",
+            "branch": "admissions", "requirements": "admissions",
+            "scholarships": "scholarships", "programs": "programs",
+            "procedures": "procedures", "date": "deadlines",
+            "documents": "documents", "link": "contacts",
+            "contact": "contacts", "people": "people",
+        }
+        fields = list(dict.fromkeys(
+            claim.canonical_field for claim in plan.claims
+            if claim.canonical_field not in {"general", "account_access"}
+        ))
+        if fields:
+            frame.requested_fields = fields
+            frame.domains = list(dict.fromkeys(
+                field_domains[field_name]
+                for field_name in fields if field_name in field_domains
+            )) or frame.domains
+            plan.domains = list(frame.domains)
+            plan.intent = (
+                plan.domains[0] if len(plan.domains) == 1 else "compound"
+            )
+        refined = [
+            str(item.get("refined_query") or "").strip()
+            for item in semantic.get("claims", [])
+            if str(item.get("refined_query") or "").strip()
+        ]
+        if refined:
+            plan.standalone_query += " (" + "؛ ".join(dict.fromkeys(refined)) + ")"
+            plan.needs_query_expansion = True
 
     def chat(self, question: str, session_id: str) -> dict:
         """Trace-wrapped legacy main-corpus path."""
@@ -690,6 +916,8 @@ class IUGChatbot:
                 plan.intent = "privacy"
                 plan.domains = ["privacy"]
                 plan.expected_answer_type = "safe_refusal"
+                plan.claims = []
+                plan.unresolved_clauses = []
 
         private_text = ""
         if current_record and route != PromptRoute.PRIVACY_REFUSAL:
@@ -787,7 +1015,8 @@ class IUGChatbot:
         system = (
             "أنت طبقة الصياغة النهائية لمساعد الجامعة. أجب بالعربية بإيجاز. "
             "المادة الموثوقة أدناه هي المصدر الوحيد المسموح؛ لا تضف رقماً أو "
-            "اسماً أو رابطاً أو إجراءً غير موجود فيها. "
+            "اسماً أو رابطاً أو إجراءً غير موجود فيها. أجب عن المطلوب وحده "
+            "ولا تضف خدمة أو نفيًا أو مثالاً لم يسأل عنه المستخدم. "
         )
         if strict:
             system += (
@@ -867,27 +1096,96 @@ class IUGChatbot:
         contract_metadata = (
             prepared.get("retrieval_metadata", {}).get("evidence_contract", {})
         )
+        unresolved_evidence_conflicts = list(
+            prepared.get("retrieval_metadata", {}).get(
+                "evidence_conflicts", []
+            )
+        )
+
+        def unresolved_conflict_issues(value: str) -> list[str]:
+            if not unresolved_evidence_conflicts:
+                return []
+            ascii_answer = value.translate(str.maketrans(
+                "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+                "01234567890123456789",
+            ))
+            norm_answer = normalize_arabic(ascii_answer)
+            acknowledges = any(
+                marker in norm_answer
+                for marker in (
+                    "تعارض", "اختلاف بين المصدر", "قيمتان", "قيمتين",
+                    "غير محسوم", "لا يمكن ترجيح", "يحتاج حسم",
+                )
+            )
+            issues = []
+            for conflict in unresolved_evidence_conflicts:
+                mentioned = 0
+                for raw in conflict.get("values", []):
+                    candidate = str(raw).strip()
+                    numeric = candidate.rstrip("%")
+                    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", numeric):
+                        pattern = rf"(?<![\d.]){re.escape(numeric)}(?!\d)"
+                        present = bool(re.search(pattern, ascii_answer))
+                    else:
+                        present = bool(
+                            normalize_arabic(candidate)
+                            and normalize_arabic(candidate) in norm_answer
+                        )
+                    mentioned += int(present)
+                # An unresolved conflict may be described (with both values)
+                # or withheld, but one side may never be selected silently.
+                if not acknowledges or mentioned == 1:
+                    issues.append(
+                        "يوجد تعارض أدلة غير محسوم؛ لا تختَر قيمة واحدة. "
+                        "اذكر التعارض والقيمتين أو قل إن القرار يحتاج حسم الإدارة."
+                    )
+                    break
+            return issues
 
         def answer_issues(value: str) -> list[str]:
-            return answer_check.problems(
+            # A general catalogue can cover the topic while still being unable
+            # to establish what is true "today".  In that case an explicit
+            # absence/current-status caveat is correct and must not be rejected
+            # as a false denial merely because the topic-level contract is full.
+            live_caveat = (
+                prepared.get("retrieval_metadata", {}).get("live_policy")
+                == "dated_caveat"
+            )
+            refund_policy_gap = (
+                "دفعت" in normalize_arabic(question)
+                and "استرد" in normalize_arabic(question)
+            )
+            return [
+                *answer_check.problems(
                 value,
                 sources=validation_sources,
                 excluded=prepared.get("excluded", []),
                 asked_level=prepared.get("asked_level"),
                 question=question,
                 entity_terms=contract_metadata.get("entity_terms", []),
-                evidence_sufficient=contract_metadata.get("sufficient"),
+                evidence_sufficient=(
+                    False if live_caveat or refund_policy_gap
+                    else contract_metadata.get("sufficient")
+                ),
                 retrieval_degraded=bool(
                     prepared.get("retrieval_metadata", {}).get(
                         "retrieval_degraded"
                     )
                 ),
-            )
+                ),
+                *unresolved_conflict_issues(value),
+            ]
 
         issues = answer_issues(answer)
         post_retry_issues: list[str] = []
         safe_llm_fallback = False
         if issues:
+            unresolved_external_policy = any(
+                "سياسة دخول/تأشيرة" in issue for issue in issues
+            )
+            unresolved_refund_policy = any(
+                "حكم استرداد رسوم طلب الالتحاق" in issue for issue in issues
+            )
             source_metadata_gap = (
                 query_rewrite.is_source_metadata_followup(question)
                 and any(
@@ -903,7 +1201,44 @@ class IUGChatbot:
                 or "أضفت رابطاً/بريداً/هاتفاً/سنة" in issue
                 for issue in issues
             )
-            if source_metadata_gap:
+            workflow_status_gap = any(
+                "حالة واجهة" in issue for issue in issues
+            )
+            if unresolved_refund_policy:
+                safe_evidence = (
+                    "المستخدم دفع رسوم طلب الالتحاق بالفعل. المعنى الإلزامي "
+                    "للجواب هو: لا يمكن تأكيد هل يسترد المبلغ أم لا، لأن "
+                    "سياسة استرداد رسوم طلب الالتحاق غير موثقة في البيانات "
+                    "الحالية. لا تقل إن المبلغ يُسترد، ولا تقل إنه لا يُسترد، "
+                    "ولا تستخدم إعلان إعفاء لفترة أخرى كحكم استرداد. وجّه "
+                    "المستخدم إلى عمادة القبول والتسجيل لحسم معاملته."
+                )
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
+                    strict=True,
+                )
+                generation_count += 1
+                safe_llm_fallback = True
+                post_retry_issues = answer_issues(answer)
+            elif unresolved_external_policy:
+                safe_evidence = (
+                    "المعلومة المطلوبة غير محسومة في بيانات الجامعة الحالية. "
+                    "لا تؤكد نوع تأشيرة أو جهة إصدار أو ضمان دخول. صغ جواباً "
+                    "موجزاً يقول إن ذلك يحتاج تحققاً من الجهات الرسمية، وإن "
+                    "كان المستخدم يحتاج كتاب قبول فيراجع القبول والتسجيل."
+                )
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
+                    strict=True,
+                )
+                generation_count += 1
+                safe_llm_fallback = True
+                post_retry_issues = answer_issues(answer)
+            elif source_metadata_gap:
                 safe_evidence = self._source_metadata_fallback(prepared["chunks"])
                 answer = self._safe_llm_answer(
                     question,
@@ -913,11 +1248,36 @@ class IUGChatbot:
                 generation_count += 1
                 safe_llm_fallback = True
                 post_retry_issues = answer_issues(answer)
+            elif workflow_status_gap:
+                safe_evidence = (
+                    "لا تعرض الأدلة المسترجعة علامة واجهة محددة تثبت حفظ "
+                    "أو إرسال الطلب. أجب عن هذه الفجوة فقط: يراجع المستخدم "
+                    "طلبه في البوابة، وإذا بقي الأمر غير واضح يتواصل مع "
+                    "عمادة القبول والتسجيل لتأكيد الاستلام. لا تذكر رسالة "
+                    "نجاح أو زرًا أو حالة طلب بعينها."
+                )
+                answer = self._safe_llm_answer(
+                    question,
+                    safe_evidence,
+                    max_tokens=generation_max_tokens,
+                    strict=True,
+                )
+                generation_count += 1
+                safe_llm_fallback = True
+                post_retry_issues = answer_issues(answer)
             elif hard_exact_gap:
                 safe_evidence = (
-                    "المعلومة أو المسار الدقيق المطلوب غير وارد بوضوح في "
-                    "المقاطع المسترجعة؛ يجب التصريح بعدم القدرة على تأكيده "
-                    "وعدم تخمين رابط أو اسم أو خطوات."
+                    (
+                        "الأدلة التالية كافية وتحتوي القيمة الدقيقة؛ انقلها "
+                        "منها ولا تستبدلها بقيمة أو مسار آخر:\n"
+                        + "\n\n".join(prepared["chunks"])
+                    )
+                    if contract_metadata.get("sufficient")
+                    else (
+                        "المعلومة أو المسار الدقيق المطلوب غير وارد بوضوح في "
+                        "المقاطع المسترجعة؛ يجب التصريح بعدم القدرة على تأكيده "
+                        "وعدم تخمين رابط أو اسم أو خطوات."
+                    )
                 )
                 answer = self._safe_llm_answer(
                     question,
@@ -950,6 +1310,7 @@ class IUGChatbot:
                 or "ليس رابطاً" in issue
                 or "رابط دليل/خطوات" in issue
                 or "ادعيتَ أن المعلومة غير موجودة" in issue
+                or "حالة واجهة" in issue
                 for issue in post_retry_issues
             )
             if (
@@ -958,9 +1319,20 @@ class IUGChatbot:
                 and not safe_llm_fallback
                 and generation_count < max_generation_attempts
             ):
+                post_workflow_status_gap = any(
+                    "حالة واجهة" in issue for issue in post_retry_issues
+                )
                 safe_evidence = (
                     self._source_metadata_fallback(prepared["chunks"])
                     if query_rewrite.is_source_metadata_followup(question)
+                    else (
+                        "لا تعرض الأدلة المسترجعة علامة واجهة محددة تثبت "
+                        "حفظ أو إرسال الطلب. يراجع المستخدم طلبه في البوابة، "
+                        "وإذا بقي الأمر غير واضح يتواصل مع عمادة القبول "
+                        "والتسجيل لتأكيد الاستلام. لا تذكر رسالة نجاح أو "
+                        "زرًا أو حالة طلب بعينها."
+                    )
+                    if post_workflow_status_gap
                     else (
                         "الأدلة التالية مسندة؛ أجب بالمعلومة الموجودة فيها "
                         "ولا تقل إنها غير موجودة:\n"
@@ -988,12 +1360,30 @@ class IUGChatbot:
                 and post_retry_issues
                 and generation_count < max_generation_attempts
             ):
+                strict_workflow_gap = workflow_status_gap or any(
+                    "حالة واجهة" in issue for issue in post_retry_issues
+                )
                 safe_evidence = (
                     self._source_metadata_fallback(prepared["chunks"])
                     if query_rewrite.is_source_metadata_followup(question)
                     else (
-                        "لا يمكن تأكيد المعلومة الدقيقة المطلوبة من الأدلة "
-                        "المتاحة، لذلك يجب الامتناع عن تخمينها."
+                        "المتاح فقط: لا توجد علامة واجهة موثقة للحفظ أو "
+                        "الإرسال. اطلب من المستخدم مراجعة طلبه في البوابة، "
+                        "ثم التواصل مع عمادة القبول والتسجيل إذا بقي الأمر "
+                        "غير واضح. لا تذكر أي رسالة أو شاشة أو حالة مفترضة."
+                    )
+                    if strict_workflow_gap
+                    else (
+                        (
+                            "الأدلة التالية كافية ومسندة؛ أجب بما يظهر فيها "
+                            "ولا تقل إن المعلومة غير موجودة:\n"
+                            + "\n\n".join(prepared["chunks"])
+                        )
+                        if contract_metadata.get("sufficient")
+                        else (
+                            "لا يمكن تأكيد المعلومة الدقيقة المطلوبة من الأدلة "
+                            "المتاحة، لذلك يجب الامتناع عن تخمينها."
+                        )
                     )
                 )
                 answer = self._safe_llm_answer(
@@ -1005,10 +1395,207 @@ class IUGChatbot:
                 generation_count += 1
                 post_retry_issues = answer_issues(answer)
 
+        semantic_verifier = {
+            "called": False,
+            "status": "not_needed",
+            "decision": None,
+            "supported_claims": [],
+            "unsupported_claims": [],
+            "missing_required": [],
+            "contradictions": [],
+            "repair_instructions": [],
+        }
+        semantic_repair = False
+        semantic_verifier_call_count = 0
+        verification_outcome = "deterministic_accept"
+        uncertainty_evidence = any(
+            any(marker in normalize_arabic(source) for marker in (
+                "غير محسوم رسميا",
+                "سياسه الاسترداد غير موثقه",
+                "لا توجد لدينا سياسه رسميه موثقه",
+                "غير متاح في البيانات الحاليه",
+            ))
+            for source in validation_sources
+        )
+        honest_uncertainty_answer = any(
+            marker in normalize_arabic(answer) for marker in (
+                "غير موثق", "لا يمكن تاكيد", "لا يمكن الجزم",
+                "لا تتوفر", "لا تحسم", "يحتاج تاكيد",
+            )
+        )
+        # When the authoritative record explicitly says the policy is
+        # unresolved and the draft honestly preserves that limitation, the
+        # deterministic exact-fact checks are the reliable gate.  Asking the
+        # semantic verifier to "complete" an unknowable field can turn a safe
+        # caveat into a repair loop or a fabricated policy.
+        resolved_as_honest_caveat = (
+            uncertainty_evidence and honest_uncertainty_answer
+        )
+        plan_metadata = prepared.get("retrieval_metadata", {}).get(
+            "query_plan", {}
+        )
+        frame_metadata = prepared.get("retrieval_metadata", {}).get(
+            "conversation_frame", {}
+        )
+        if (
+            not post_retry_issues
+            and not resolved_as_honest_caveat
+            and config.SEMANTIC_RAG_ENABLED
+            and should_run_semantic_verifier(plan_metadata, frame_metadata)
+        ):
+            semantic_verifier = run_semantic_verifier(
+                question=question,
+                answer=answer,
+                evidence=validation_sources,
+                claim_coverage=contract_metadata.get("claim_coverage", {}),
+                live_policy=str(
+                    prepared.get("retrieval_metadata", {}).get(
+                        "live_policy", "indexed"
+                    )
+                ),
+                completion=lambda system, user, max_tokens=None: self._complete_llm(
+                    system, user, max_tokens=max_tokens
+                ),
+                max_tokens=config.SEMANTIC_VERIFIER_MAX_TOKENS,
+                max_evidence_chars=(
+                    config.SEMANTIC_VERIFIER_MAX_EVIDENCE_CHARS
+                ),
+            )
+            semantic_verifier_call_count += 1
+            if semantic_verifier.get("status") == "unavailable":
+                verification_outcome = "verification_degraded"
+            elif semantic_verifier.get("decision") == "accept":
+                verification_outcome = "accept"
+            else:
+                decision = semantic_verifier.get("decision") or "repair"
+                instructions = [
+                    *semantic_verifier.get("repair_instructions", []),
+                    *(
+                        "احذف أو صحح الادعاء غير المسند: " + value
+                        for value in semantic_verifier.get(
+                            "unsupported_claims", []
+                        )
+                    ),
+                    *(
+                        "أكمل الحقل المطلوب أو صرّح بنقصه: " + value
+                        for value in semantic_verifier.get(
+                            "missing_required", []
+                        )
+                    ),
+                    *(
+                        "لا تمرر هذا التناقض: " + value
+                        for value in semantic_verifier.get(
+                            "contradictions", []
+                        )
+                    ),
+                ]
+                if decision == "dated_caveat":
+                    instructions.append(
+                        "صغ المعلومة كآخر معلومة مؤرخة، ولا تثبت الحالة الحالية."
+                    )
+                if decision == "clarify":
+                    instructions.append(
+                        "صغ سؤال توضيح واحداً قصيراً ولا تخمّن المرجع."
+                    )
+                if generation_count < max_generation_attempts:
+                    corrective = (
+                        prepared["system"]
+                        + "\n\n⚠️ إصلاح دلالي إلزامي ونهائي:\n- "
+                        + "\n- ".join(instructions or [
+                            "أعد الصياغة من الأدلة وعقد الادعاءات فقط."
+                        ])
+                    )
+                    answer = self._complete_llm(
+                        corrective,
+                        user_message,
+                        max_tokens=generation_max_tokens,
+                    )
+                    generation_count += 1
+                    semantic_repair = True
+                    semantic_verifier["repair_applied"] = True
+                    post_retry_issues = answer_issues(answer)
+                    verification_outcome = decision
+                    # A repaired draft must not become ``grounded`` merely
+                    # because deterministic number/link checks pass.  Verify
+                    # semantic claim coverage once more; this is a bounded
+                    # confirmation, not an open repair loop.
+                    if not post_retry_issues:
+                        initial_decision = decision
+                        repaired_verifier = run_semantic_verifier(
+                            question=question,
+                            answer=answer,
+                            evidence=validation_sources,
+                            claim_coverage=contract_metadata.get(
+                                "claim_coverage", {}
+                            ),
+                            live_policy=str(
+                                prepared.get("retrieval_metadata", {}).get(
+                                    "live_policy", "indexed"
+                                )
+                            ),
+                            completion=lambda system, user, max_tokens=None: self._complete_llm(
+                                system, user, max_tokens=max_tokens
+                            ),
+                            max_tokens=config.SEMANTIC_VERIFIER_MAX_TOKENS,
+                            max_evidence_chars=(
+                                config.SEMANTIC_VERIFIER_MAX_EVIDENCE_CHARS
+                            ),
+                        )
+                        semantic_verifier_call_count += 1
+                        repaired_verifier["repair_applied"] = True
+                        repaired_verifier["initial_decision"] = initial_decision
+                        semantic_verifier = repaired_verifier
+                        repaired_decision = repaired_verifier.get("decision")
+                        if repaired_verifier.get("status") == "unavailable":
+                            verification_outcome = "verification_degraded"
+                        elif repaired_decision in {"accept", "dated_caveat"}:
+                            verification_outcome = "accept_after_repair"
+                        else:
+                            missing_after_repair = list(
+                                repaired_verifier.get("missing_required", [])
+                            )
+                            unsupported_after_repair = list(
+                                repaired_verifier.get("unsupported_claims", [])
+                            )
+                            detail = ", ".join(
+                                [*missing_after_repair, *unsupported_after_repair]
+                            )
+                            post_retry_issues.append(
+                                "الإصلاح الدلالي لم يغطِّ جميع الادعاءات المطلوبة"
+                                + (f": {detail}" if detail else ".")
+                            )
+                else:
+                    post_retry_issues.append(
+                        "رفض المدقق الدلالي الإجابة ولا توجد محاولة إصلاح متبقية."
+                    )
+
+        # A known deterministic failure is never delivered (and therefore can
+        # never be streamed or written to conversation history).
+        if post_retry_issues:
+            raise ChatbotError(
+                "تعذر اعتماد إجابة آمنة بعد التحقق؛ أعد صياغة السؤال أو حاول لاحقاً.",
+                details={
+                    "verification_outcome": "rejected",
+                    "issues": list(post_retry_issues),
+                },
+            )
+
         resolved_fields = list(contract_metadata.get("resolved_fields", []))
         missing_fields = list(contract_metadata.get("missing_fields", []))
-        if post_retry_issues:
-            turn_status = sessions_mod.TurnStatus.VALIDATION_FAILURE
+        if (
+            plan_metadata.get("requires_clarification")
+            or contract_metadata.get("unresolved_clauses")
+            or semantic_verifier.get("decision") == "clarify"
+        ):
+            turn_status = sessions_mod.TurnStatus.NEEDS_CLARIFICATION
+        elif (
+            prepared.get("retrieval_metadata", {}).get("live_policy")
+            == "dated_caveat"
+            or semantic_verifier.get("decision") == "dated_caveat"
+        ):
+            turn_status = sessions_mod.TurnStatus.LIVE_VERIFICATION_REQUIRED
+        elif verification_outcome == "verification_degraded":
+            turn_status = sessions_mod.TurnStatus.VERIFICATION_DEGRADED
         elif contract_metadata.get("sufficient"):
             turn_status = sessions_mod.TurnStatus.VERIFIED
         elif resolved_fields and missing_fields:
@@ -1020,6 +1607,8 @@ class IUGChatbot:
         generation_outcome = (
             "safe_llm_fallback"
             if safe_llm_fallback
+            else "semantic_repair"
+            if semantic_repair
             else "corrected"
             if issues
             else "first_pass"
@@ -1036,7 +1625,15 @@ class IUGChatbot:
             "turn_status": turn_status,
             "generation_outcome": generation_outcome,
             "final_answer_origin": "llm",
+            "semantic_verifier": semantic_verifier,
+            "verification_outcome": verification_outcome,
         })
+        planner_call_count = int(
+            prepared.get("retrieval_metadata", {}).get(
+                "semantic_planner_call_count", 0
+            )
+        )
+        verifier_call_count = semantic_verifier_call_count
         return answer, q_vec, {
             "answer_check_retry": bool(issues),
             "answer_check_issues": list(issues),
@@ -1044,9 +1641,16 @@ class IUGChatbot:
             "answer_check_safety_fallback": safe_llm_fallback,
             "final_answer_origin": "llm",
             "llm_generation_count": generation_count,
+            "llm_call_count": (
+                generation_count + planner_call_count + verifier_call_count
+            ),
+            "semantic_planner_call_count": planner_call_count,
+            "semantic_verifier_call_count": verifier_call_count,
             "llm_generation_limit": max_generation_attempts,
             "generation_outcome": generation_outcome,
             "turn_status": turn_status,
+            "semantic_verifier": semantic_verifier,
+            "verification_outcome": verification_outcome,
             "history_turn_ids_used": history_turn_ids,
             "prompt_sha256": prompt_sha256,
             "generation_latency_ms": generation_latency_ms,
@@ -1155,6 +1759,7 @@ class IUGChatbot:
             "candidate_ids_after_rerank": after_rerank,
             "selected_evidence_ids": evidence_ids,
             "structured_fields": contract.get("resolved_fields", []),
+            "claim_coverage": contract.get("claim_coverage", {}),
             "evidence_sufficient": contract.get("sufficient", False),
             "reranker_status": prepared_metadata.get("rerank_status"),
             "reranker_events": reranker_events,
@@ -1171,7 +1776,12 @@ class IUGChatbot:
                 "turn_status": validation.get("turn_status"),
                 "generation_outcome": validation.get("generation_outcome"),
                 "generation_count": validation.get("llm_generation_count", 0),
+                "llm_call_count": validation.get("llm_call_count", 0),
                 "final_answer_origin": validation.get("final_answer_origin"),
+                "semantic_verifier": validation.get("semantic_verifier"),
+                "verification_outcome": validation.get(
+                    "verification_outcome"
+                ),
             },
             "retry_reason": retry_reasons or None,
             "latency_ms": {
@@ -1348,6 +1958,40 @@ class IUGChatbot:
             history,
             retrieval_question=retrieval_question,
         )
+        semantic_planner = {
+            "called": False,
+            "status": "not_needed",
+            "decision": None,
+            "claims": [],
+            "unresolved_clauses": list(plan.unresolved_clauses),
+        }
+
+        def _invoke_semantic_planner(evidence_gaps: list[str] | None = None):
+            nonlocal semantic_planner
+            if semantic_planner.get("called") or not config.SEMANTIC_RAG_ENABLED:
+                if not config.SEMANTIC_RAG_ENABLED:
+                    semantic_planner["status"] = "disabled"
+                return
+            recent_user_turns = [
+                str(turn.get("user") or "").strip()
+                for turn in history[-5:]
+                if sessions_mod.is_fresh(turn)
+                and str(turn.get("user") or "").strip()
+            ]
+            semantic_planner = run_semantic_planner(
+                question=question,
+                deterministic_plan=plan.as_metadata(),
+                recent_user_turns=recent_user_turns,
+                evidence_gaps=evidence_gaps,
+                completion=lambda system, user, max_tokens=None: self._complete_llm(
+                    system, user, max_tokens=max_tokens
+                ),
+                max_tokens=config.SEMANTIC_PLANNER_MAX_TOKENS,
+            )
+            self._apply_semantic_plan(plan, frame, semantic_planner)
+
+        if plan.needs_semantic_planner and not safety_directive:
+            _invoke_semantic_planner()
         previous_turn = history[-1] if history else {}
         repeated_after_low_confidence = bool(
             previous_turn.get("status") in sessions_mod.LOW_CONFIDENCE_STATUSES
@@ -1364,8 +2008,19 @@ class IUGChatbot:
             plan.expected_answer_type = "safe_refusal"
             plan.needs_reranking = False
             plan.needs_query_expansion = False
+            # Do not echo the requested person's name through claim surface
+            # text/entity metadata into the system prompt.  The LLM needs the
+            # policy directive only, never the private subject identifier.
+            plan.claims = []
+            plan.unresolved_clauses = []
         domain_route = route_query(plan, frame)
         authoritative = list(authoritative_evidence or [])
+        if plan.requires_clarification:
+            authoritative.append(
+                "[حالة فهم السؤال] يوجد تعبير لا يملك مرجعاً جامعياً "
+                "كافياً في السؤال أو في دور مستخدم حديث. لا تخمّن معناه؛ "
+                "صغ سؤال توضيح واحداً قصيراً يذكر الخيار المقصود."
+            )
         structured_chunks: list[str] = []
         structured_source: str | None = None
 
@@ -1384,7 +2039,11 @@ class IUGChatbot:
             has_authoritative_evidence=bool(authoritative),
             safety_directive=bool(safety_directive),
         )
-        if agent_plan.use_structured_lookup and not safety_directive:
+        if (
+            agent_plan.use_structured_lookup
+            and not safety_directive
+            and not plan.requires_clarification
+        ):
             admission = self._uploaded.resolve_admission(
                 plan.standalone_query, allowed_collections
             )
@@ -1457,7 +2116,10 @@ class IUGChatbot:
             if rerank_requested
             else target_k
         )
-        skip_general_retrieval = not agent_plan.use_hybrid_retrieval
+        skip_general_retrieval = (
+            not agent_plan.use_hybrid_retrieval
+            or plan.requires_clarification
+        )
         if safety_directive:
             relevant_chunks = []
         elif skip_general_retrieval:
@@ -1465,8 +2127,14 @@ class IUGChatbot:
         elif self._uploaded.is_empty():
             relevant_chunks = []
         else:
-            relevant_chunks = self._search_all_for_question(
-                search_question, fetch_k, allowed_collections
+            relevant_chunks = (
+                self._search_claims_for_plan(
+                    plan, fetch_k, allowed_collections
+                )
+                if plan.claims
+                else self._search_all_for_question(
+                    search_question, fetch_k, allowed_collections
+                )
             )
             # سلسلة السياق سلاح ذو حدين: تُنقذ المتابعات الحقيقية («كم هيكلف؟»)
             # لكنها عند تغيير الموضوع تُغرق البحث بموضوع الدور السابق — ثبت
@@ -1477,8 +2145,9 @@ class IUGChatbot:
             # مُكاش، والسؤال بلا مرادفات عامية يطابق متجه الذاكرة المحسوب أصلاً.)
             # استثناء: سؤال الإحالة الخالص («اذكرهم») بحثه الخام ضجيج —
             # نتائج السياق وحدها هي الصواب، فلا بحث مزدوجاً له.
-            if search_question != base_question and \
+            if plan.is_followup and search_question != base_question and \
                     not query_rewrite.is_pure_reference(retrieval_question or question) and \
+                    not plan.is_compound and \
                     not complete_list_requested and \
                     not query_rewrite.is_source_metadata_followup(
                         retrieval_question or question
@@ -1532,9 +2201,10 @@ class IUGChatbot:
                 focus = {n for n in names
                          if "قبول" in normalize_arabic(n) or "معدلات" in normalize_arabic(n)}
                 if focus:
-                    focused = []
+                    all_focused = []
                     for name in sorted(focus):
-                        focused.extend(self._uploaded.chunks_of(name))
+                        all_focused.extend(self._uploaded.chunks_of(name))
+                    focused = list(all_focused)
                     if len(focused) > config.ADMISSION_TABLE_MAX_CHUNKS:
                         focused = self._uploaded.search_all(
                             search_question, config.ADMISSION_TABLE_MAX_CHUNKS,
@@ -1546,22 +2216,80 @@ class IUGChatbot:
                     # سعر ساعة الآداب 20 ديناراً قُرئ «مفتاح 20%») — نُصدّر
                     # المفاتيح الرقمية كسطور مستخلصة آلياً لا لبس فيها، وتبقى
                     # الخام للمفاتيح النصية (الطب «تنافسية») والرسوم.
+                    specific_admission_entities = list(dict.fromkeys(
+                        claim.entity
+                        for claim in plan.claims
+                        if claim.entity
+                        and claim.canonical_field in {
+                            "fee", "branch", "admission_cutoff"
+                        }
+                    ))
+                    targeted_digest = bool(
+                        specific_admission_entities
+                        and not complete_list_requested
+                        and not plan.is_list_question
+                    )
+                    # A student's rate is an upper filter only for discovery
+                    # questions ("what can accept me?").  Applying it to a
+                    # named-program eligibility question hides the very cutoff
+                    # that must be compared when the student does *not* qualify.
                     digest = self._uploaded.admission_context_lines(
                         None if allowed_collections is None
                         else set(allowed_collections),
-                        branch=active_constraints.get("branch"),
-                        max_percentage=active_constraints.get("rate"),
+                        branch=(
+                            None if targeted_digest
+                            else active_constraints.get("branch")
+                        ),
+                        max_percentage=(
+                            None if targeted_digest
+                            else active_constraints.get("rate")
+                        ),
                     )
+
+                    def _matches_specific_entity(value: str) -> bool:
+                        normalized_value = normalize_arabic(value)
+                        for entity in specific_admission_entities:
+                            terms = []
+                            for token in normalize_arabic(entity).split():
+                                if token.startswith("ال") and len(token) > 4:
+                                    token = token[2:]
+                                if len(token) >= 3:
+                                    terms.append(token)
+                            if terms and all(
+                                term in normalized_value for term in terms
+                            ):
+                                return True
+                        return False
+
+                    if digest and targeted_digest:
+                        headers = [line for line in digest if line.startswith("[")]
+                        matching_lines = [
+                            line for line in digest
+                            if not line.startswith("[")
+                            and _matches_specific_entity(line)
+                        ]
+                        digest = [*headers, *matching_lines]
+                        if not digest:
+                            digest = [
+                                "[لا يوجد مفتاح رقمي مطابق للبرنامج؛ "
+                                "استخدم الشرط النصي من دليله الخام]"
+                            ]
                     if digest:
                         admission_digest = True
-                        for line in digest:
-                            if line.startswith("[") or "|" not in line:
-                                continue
-                            faculty = line.split("|", 1)[0].strip()
-                            if faculty and faculty not in admission_faculties:
-                                admission_faculties.append(faculty)
+                        if not targeted_digest:
+                            for line in digest:
+                                if line.startswith("[") or "|" not in line:
+                                    continue
+                                faculty = line.split("|", 1)[0].strip()
+                                if faculty and faculty not in admission_faculties:
+                                    admission_faculties.append(faculty)
                         digest_chunk = (
-                            "جدول مفاتيح القبول (مستخلص آلياً من ملفات الجامعة):\n"
+                            (
+                                "دليل مفتاح القبول المرتبط بالبرنامج المطلوب "
+                                "(مستخلص آلياً من ملفات الجامعة):\n"
+                                if targeted_digest
+                                else "جدول مفاتيح القبول (مستخلص آلياً من ملفات الجامعة):\n"
+                            )
                             + "\n".join(dict.fromkeys(digest))
                         )
                         # النسخة المنظمة تحمل كل الأرقام والفروع بلا رسوم.
@@ -1579,6 +2307,11 @@ class IUGChatbot:
                                 for marker in textual_markers
                             )
                         ]
+                        if targeted_digest:
+                            textual_support = [
+                                chunk for chunk in textual_support
+                                if _matches_specific_entity(chunk)
+                            ]
                         active_branch = active_constraints.get("branch")
                         if (
                             active_branch is not None
@@ -1587,7 +2320,7 @@ class IUGChatbot:
                             # الشرط النصي المتاح حالياً هو طب/علمي؛ لا نحقنه
                             # في سؤال أدبي فيعيد جذب النموذج إلى الفرع القديم.
                             textual_support = []
-                        focused_set = set(focused)
+                        focused_set = set(all_focused)
                         list_from_digest = (
                             query_rewrite.has_admission_intent(base_question)
                             or complete_list_requested
@@ -1604,13 +2337,42 @@ class IUGChatbot:
                             )
                             else []
                         )
+                        # The admissions digest intentionally contains no
+                        # tuition values.  For compound questions such as
+                        # "price + admission cutoff", keep the already
+                        # retrieved, entity-matching raw fee record even when
+                        # it comes from the same admissions/fees collection.
+                        focused_fee_evidence = []
+                        if any(
+                            claim.canonical_field == "fee"
+                            for claim in plan.claims
+                        ):
+                            focused_fee_evidence = [
+                                chunk for chunk in relevant_chunks
+                                if (
+                                    chunk in focused_set
+                                    and _matches_specific_entity(chunk)
+                                    and any(
+                                        marker in normalize_arabic(chunk)
+                                        for marker in (
+                                            "credit_hour_fee", "سعر الساعه",
+                                            "رسوم الساعه", "دينار",
+                                        )
+                                    )
+                                )
+                            ]
                         relevant_chunks = (
                             [digest_chunk]
                             + list(dict.fromkeys(textual_support))
+                            + list(dict.fromkeys(focused_fee_evidence))
                             + other_evidence
                         )
                     else:
-                        seen = set(focused)
+                        # When a large admission collection is bounded to a
+                        # handful of focused hits, remove the rest of that
+                        # same collection from the general retrieval window;
+                        # otherwise it silently defeats the configured cap.
+                        seen = set(all_focused)
                         relevant_chunks = (
                             focused
                             + [c for c in relevant_chunks if c not in seen]
@@ -1654,13 +2416,19 @@ class IUGChatbot:
 
         # ── احترام الاستبعاد الصريح («مش منح»، «خلينا من الهندسة») ──
         excluded = query_rewrite.extract_exclusions(question)
-        if excluded and relevant_chunks:
-            markers = query_rewrite.exclusion_file_markers(excluded)
-            kept = [c for c in relevant_chunks
+        exclusion_markers = query_rewrite.exclusion_file_markers(excluded)
+
+        def _filter_excluded_chunks(values: list[str]) -> list[str]:
+            if not exclusion_markers:
+                return list(values)
+            kept = [c for c in values
                     if not (c.startswith("[ملف: ") and any(
-                        m in normalize_arabic(c[6:c.find("]")]) for m in markers))]
-            if kept:
-                relevant_chunks = kept
+                        marker in normalize_arabic(c[6:c.find("]")])
+                        for marker in exclusion_markers))]
+            return kept
+
+        if excluded and relevant_chunks:
+            relevant_chunks = _filter_excluded_chunks(relevant_chunks)
 
         # دليل الأشخاص المختلط: إذا طلب المستخدم دوراً مؤسسياً محدداً
         # ووجدت عدة سجلات تطابقه حرفياً، احذف النواب/الأدوار الإدارية
@@ -1738,6 +2506,16 @@ class IUGChatbot:
                     max_additions=config.PARENT_EXPANSION_MAX_CHUNKS,
                 )
             )
+            # A parent/sibling expansion may cross back into a collection the
+            # user explicitly excluded.  Enforce the same boundary again.
+            relevant_chunks = _filter_excluded_chunks(relevant_chunks)
+            # Parent/sibling expansion must not reintroduce adjacent roles
+            # (for example a vice dean) after an exact institutional-role
+            # query was already focused to deans only.
+            if role_focus_applied:
+                relevant_chunks, _ = query_rewrite.prefer_exact_role_chunks(
+                    search_question, relevant_chunks
+                )
 
         structured_projection = project_structured_evidence(
             domain_route, relevant_chunks
@@ -1765,12 +2543,87 @@ class IUGChatbot:
                 chunk for chunk in relevant_chunks if chunk not in seen_evidence
             ]
 
+        recency_resolutions: list[dict] = []
+
+        def _deduplicate_runtime_evidence(values: list[str]):
+            metadata = self._uploaded.candidate_metadata_for_chunks(values)
+            source_recency = (
+                {} if config.API_ENV == "testing"
+                else file_catalog.recency_map()
+            )
+            conflict_overrides = (
+                {} if config.API_ENV == "testing"
+                else file_catalog.fact_resolution_map()
+            )
+            result = deduplicate_evidence(
+                values,
+                metadata,
+                source_recency=source_recency,
+                conflict_overrides=conflict_overrides,
+            )
+            result.conflicts = _conflicts_relevant_to_plan(
+                plan, result.conflicts
+            )
+            if result.resolved_conflicts:
+                lines = []
+                for conflict in result.resolved_conflicts:
+                    lines.append(
+                        f"{conflict['canonical_field']} | {conflict['entity']} | "
+                        f"القيمة المعتمدة: {conflict['selected_value']} | "
+                        f"المصدر: {conflict['selected_source']} | "
+                        f"تاريخ المصدر: {conflict['selected_date']}"
+                    )
+                resolution_chunk = (
+                    "[حسم تعارض بالحداثة؛ تجاهل القيم الأقدم المخالفة]\n"
+                    + "\n".join(lines)
+                )
+                if resolution_chunk not in authoritative:
+                    authoritative.append(resolution_chunk)
+                kept_metadata = [
+                    metadata[index] if index < len(metadata) else {}
+                    for index in result.kept_indexes
+                ]
+                result.chunks = suppress_rejected_conflict_values(
+                    result.chunks,
+                    result.resolved_conflicts,
+                    kept_metadata,
+                )
+            recency_resolutions[:] = result.resolved_conflicts
+            merged = list(dict.fromkeys([
+                *authoritative,
+                *result.chunks,
+            ]))
+            return merged, result
+
+        relevant_chunks, deduplication = _deduplicate_runtime_evidence(
+            relevant_chunks
+        )
         contract = build_evidence_contract(
             plan,
             frame,
             relevant_chunks,
             authoritative_evidence=authoritative,
+            evidence_conflicts=deduplication.conflicts,
         )
+        if (
+            config.SEMANTIC_RAG_ENABLED
+            and not semantic_planner.get("called")
+            and (
+                contract.missing_fields
+                or not contract.entity_supported
+            )
+        ):
+            _invoke_semantic_planner([
+                *contract.missing_fields,
+                *( ["entity_binding"] if not contract.entity_supported else [] ),
+            ])
+            contract = build_evidence_contract(
+                plan,
+                frame,
+                relevant_chunks,
+                authoritative_evidence=authoritative,
+                evidence_conflicts=deduplication.conflicts,
+            )
         coverage_retry_query = None
         coverage_retry_added = 0
         reranker_failed = rerank_status in {
@@ -1788,18 +2641,66 @@ class IUGChatbot:
             and not safety_directive
             and not skip_general_retrieval
         ):
-            coverage_retry_query = missing_field_query(plan, contract)
+            missing_claims = [
+                claim for claim in plan.claims
+                if not (
+                    contract.claim_coverage.get(claim.claim_id, {})
+                    .get("resolved", False)
+                )
+            ]
+            claim_retry_queries = list(dict.fromkeys(
+                claim.retrieval_query for claim in missing_claims
+            ))
+            coverage_retry_query = (
+                " || ".join(claim_retry_queries)
+                if claim_retry_queries
+                else missing_field_query(plan, contract)
+            )
             if not coverage_retry_query and reranker_failed:
                 coverage_retry_query = (
                     plan.standalone_query
                     + " (توسيع RRF بعد تعذر إعادة الترتيب)"
                 )
             if coverage_retry_query:
-                extra_chunks = self._search_all_for_question(
-                    coverage_retry_query,
-                    max(4, min(config.COVERAGE_TOP_K, top_k)),
-                    allowed_collections,
-                )
+                retry_k = max(4, min(config.COVERAGE_TOP_K, top_k))
+                if claim_retry_queries:
+                    per_claim_k = max(
+                        2,
+                        (retry_k + len(claim_retry_queries) - 1)
+                        // len(claim_retry_queries),
+                    )
+                    batches = [
+                        self._search_all_for_question(
+                            value,
+                            per_claim_k,
+                            allowed_collections,
+                        )
+                        for value in claim_retry_queries
+                    ]
+                    extra_chunks = []
+                    seen_retry = set()
+                    for position in range(max(
+                        (len(batch) for batch in batches), default=0
+                    )):
+                        for batch in batches:
+                            if position >= len(batch):
+                                continue
+                            chunk = batch[position]
+                            if chunk in seen_retry:
+                                continue
+                            seen_retry.add(chunk)
+                            extra_chunks.append(chunk)
+                            if len(extra_chunks) >= retry_k:
+                                break
+                        if len(extra_chunks) >= retry_k:
+                            break
+                else:
+                    extra_chunks = self._search_all_for_question(
+                        coverage_retry_query,
+                        retry_k,
+                        allowed_collections,
+                    )
+                extra_chunks = _filter_excluded_chunks(extra_chunks)
                 known = set(relevant_chunks)
                 additions = [chunk for chunk in extra_chunks if chunk not in known]
                 if additions:
@@ -1821,11 +2722,15 @@ class IUGChatbot:
                     merged_body = merged_body[:retry_limit]
                     relevant_chunks = list(authoritative) + merged_body
                     coverage_retry_added = max(0, len(merged_body) - len(body))
+                    relevant_chunks, deduplication = (
+                        _deduplicate_runtime_evidence(relevant_chunks)
+                    )
                     contract = build_evidence_contract(
                         plan,
                         frame,
                         relevant_chunks,
                         authoritative_evidence=authoritative,
+                        evidence_conflicts=deduplication.conflicts,
                     )
         dynamic_instructions: list[str] = []
         if safety_directive:
@@ -1843,6 +2748,17 @@ class IUGChatbot:
             dynamic_instructions.append(
                 "السؤال ما زال يحتمل أكثر من مرجع؛ اطلب تحديداً قصيراً بدل اختيار موضوع عشوائي."
             )
+        if plan.requires_clarification:
+            if normalize_arabic(question).startswith("كم ساع"):
+                dynamic_instructions.append(
+                    "صغ سؤال توضيح واحداً فقط: هل تقصد سعر الساعة الدراسية "
+                    "أم عدد الساعات المعتمدة في الخطة؟ لا تعرض رقماً قبل التحديد."
+                )
+            else:
+                dynamic_instructions.append(
+                    "توقف عن الاسترجاع لهذا الدور وصغ سؤال توضيح واحداً فقط؛ "
+                    "لا تفترض أن «المفتاح» يعني مفتاح القبول بلا سياق أكاديمي."
+                )
         if reranker_failed:
             dynamic_instructions.append(
                 "تعذرت إعادة الترتيب واستخدم النظام RRF الموسع؛ لا تدّعِ أن "
@@ -1853,6 +2769,13 @@ class IUGChatbot:
                 "تعذر تحديث مصدر واحد على الأقل وبقيت نسخته السابقة فعالة؛ "
                 "لا تستخدم نفياً قطعياً لمعلومة غائبة، وقل إنك لا تستطيع "
                 "تأكيدها من النسخة المتاحة حالياً."
+            )
+        if plan.live_policy == "dated_caveat":
+            dynamic_instructions.append(
+                "السؤال يطلب حالة الآن/اليوم، لكن هذا الإصدار لا يجلب الويب "
+                "مباشرة. اذكر فقط آخر معلومة واردة وتاريخ تحققها إن وُجد، "
+                "وقل إنها لا تثبت الحالة الحالية، ثم وجّه إلى الرابط الرسمي "
+                "الموجود في الدليل. غياب تحديث ليس نفياً ولا إثباتاً."
             )
 
         prompt_route = (
@@ -1982,7 +2905,7 @@ class IUGChatbot:
 تعليمات تغطية خاصة بهذا الطلب:
 - المطلوب قائمة شاملة مما تدعمه كل المقاطع أعلاه، لا أمثلة ولا «من أبرز».
 - راجع المقاطع كلها قبل الصياغة وادمج العناصر المتكررة دون إسقاط عناصر مختلفة.
-- لهذا الطلب يجوز الإطالة بقدر ما يلزم لإكمال القائمة دون إسقاط عناصر.
+- يجوز الإطالة بقدر إكمال قائمة شاملة، ودون أي سرد زائد خارج عناصرها.
 - إن كانت المقاطع نفسها لا تسند قائمة كاملة، اذكر حدود المتاح بوضوح ولا تخترع.
 """
         if query_rewrite.is_multi_part_question(question):
@@ -2021,10 +2944,26 @@ class IUGChatbot:
             ),
             "active_academic_constraints": active_constraints,
             "query_plan": plan.as_metadata(),
+            "claim_plan": [claim.as_metadata() for claim in plan.claims],
+            "unresolved_clauses": list(plan.unresolved_clauses),
+            "concept_resolutions": [
+                item.as_metadata() for item in plan.concept_resolutions
+            ],
+            "semantic_planner": semantic_planner,
+            "semantic_planner_call_count": int(bool(
+                semantic_planner.get("called")
+            )),
             "domain_route": domain_route.as_metadata(),
             "conversation_frame": frame.as_metadata(),
             "evidence_contract": contract.as_metadata(),
+            "claim_coverage": contract.claim_coverage,
+            "deduplicated_evidence_count": len(relevant_chunks),
+            "deduplicated_fact_count": len(deduplication.items),
+            "duplicate_evidence_removed": deduplication.duplicate_count,
+            "evidence_conflicts": deduplication.conflicts,
+            "recency_conflict_resolutions": recency_resolutions,
             "agentic_rag": agent_metadata,
+            "retrieval_attempts": agent_metadata["retrieval_attempts_used"],
             "parent_expansion_added": parent_expansion_added,
             "coverage_retry_query": coverage_retry_query,
             "coverage_retry_added": coverage_retry_added,
@@ -2033,6 +2972,7 @@ class IUGChatbot:
             ),
             "source_metadata_extracted": source_metadata_extracted,
             "authoritative_evidence_count": len(authoritative),
+            "live_policy": plan.live_policy,
             "safety_directive_applied": bool(safety_directive),
             "pipeline_version": config.RAG_PIPELINE_VERSION,
         }

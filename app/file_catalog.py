@@ -10,13 +10,81 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 from uuid import uuid4
 
-from app import config, db
+from app import config, data_quality, db
 from app.chunking import build_uploaded_chunks
 from app.rbac import Principal, Role
 
 
 CATALOG = "file_catalog"
 VERSIONS = "managed_file_versions"
+
+
+class UnresolvedDataConflictError(ValueError):
+    """Publishing would activate facts that conflict with current evidence."""
+
+
+def _as_documents(documents: list | dict) -> list[dict]:
+    values = documents if isinstance(documents, list) else [documents]
+    return [dict(item) for item in values if isinstance(item, dict)]
+
+
+def _runtime_document_map() -> dict[str, list[dict]]:
+    """Read current published bytes without changing any collection."""
+    # Tests exercise the pure preflight logic with isolated catalog doubles;
+    # do not wait for a real Mongo server in that environment.
+    if config.API_ENV == "testing":
+        return {}
+    result: dict[str, list[dict]] = {}
+    try:
+        for name in db.list_uploaded_collections():
+            if name in config.RAG_EXCLUDE_COLLECTIONS:
+                continue
+            docs = []
+            for item in db.get_uploaded_collection(name).find({}):
+                value = dict(item)
+                value.pop("_id", None)
+                docs.append(value)
+            if docs:
+                result[str(name)] = docs
+    except Exception as exc:
+        # Data-quality publication must fail closed: an unavailable current
+        # corpus is not evidence that no conflicts exist.
+        raise RuntimeError(
+            "تعذر قراءة البيانات المنشورة لإجراء فحص التعارض؛ لم يتم النشر."
+        ) from exc
+    return result
+
+
+def preflight(
+    collection: str,
+    documents: list | dict,
+) -> dict:
+    docs = _as_documents(documents)
+    if not docs:
+        raise ValueError("المحتوى يجب أن يكون JSON object أو قائمة objects غير فارغة.")
+    return data_quality.preflight_documents(
+        docs,
+        _runtime_document_map(),
+        incoming_source=str(collection),
+    )
+
+
+def _apply_conflict_resolutions(
+    report: dict,
+    resolutions: dict[str, dict],
+) -> dict:
+    unresolved = 0
+    for conflict in report.get("conflicts", []):
+        resolution = resolutions.get(conflict.get("conflict_id"))
+        if resolution:
+            conflict["resolution"] = resolution.get("decision")
+            conflict["selected_source"] = resolution.get("selected_source")
+            conflict["selected_value"] = resolution.get("selected_value")
+        else:
+            unresolved += 1
+    report["unresolved_conflict_count"] = unresolved
+    report["can_publish"] = unresolved == 0
+    return report
 
 # The MAXIMUM roles each classification may ever grant. A file's allowed_roles
 # is intersected with this set, so an over-broad request (e.g. the schema's
@@ -207,6 +275,8 @@ def adopt_all(available, actor_id: str) -> list:
 def recency_map() -> dict:
     """{collection: آخر تحديث ISO} لكل الملفات المسجّلة — تُستخدم لتفضيل الملف
     الأحدث عند تعارض المعلومات بين مصدرين في الإجابة."""
+    if config.API_ENV == "testing":
+        return {}
     try:
         return {
             doc["collection"]: str(doc.get("updated_at") or doc.get("created_at") or "")
@@ -276,16 +346,141 @@ def process(file_id: str, actor_id: str) -> Optional[dict]:
     chunks = build_uploaded_chunks(docs, entry["collection"])
     if not chunks:
         raise ValueError("لم ينتج عن الملف أي مقطع صالح للفهرسة.")
+    quality_report = preflight(entry["collection"], docs)
     now = _now()
     _versions().update_one(
         {"file_id": file_id, "version": version},
-        {"$set": {"status": "ready", "chunks_count": len(chunks), "processed_at": now}},
+        {"$set": {
+            "status": "ready",
+            "chunks_count": len(chunks),
+            "processed_at": now,
+            "preflight": quality_report,
+            "conflict_resolutions": {},
+        }},
     )
     _catalog().update_one(
         {"file_id": file_id},
-        {"$set": {"status": "ready", "updated_at": now, "updated_by": actor_id}},
+        {"$set": {
+            "status": "ready",
+            "preflight": quality_report,
+            "updated_at": now,
+            "updated_by": actor_id,
+        }},
     )
     return get_file(file_id)
+
+
+def resolve_conflicts(
+    file_id: str,
+    actor_id: str,
+    *,
+    decision: str,
+    conflict_ids: list[str] | None = None,
+) -> Optional[dict]:
+    if decision not in {"keep_existing", "prefer_incoming"}:
+        raise ValueError("قرار التعارض غير صالح.")
+    entry = get_file(file_id)
+    if entry is None:
+        return None
+    version = int(entry["latest_version"])
+    version_doc = _versions().find_one({"file_id": file_id, "version": version})
+    if not version_doc:
+        return None
+    report = preflight(
+        entry["collection"], list(version_doc.get("documents") or [])
+    )
+    requested = set(conflict_ids or [])
+    available = {
+        conflict["conflict_id"] for conflict in report.get("conflicts", [])
+    }
+    if requested - available:
+        raise ValueError("يتضمن الطلب معرّف تعارض غير موجود في آخر تقرير.")
+    targets = requested or available
+    resolutions = dict(version_doc.get("conflict_resolutions") or {})
+    dates = recency_map()
+    for conflict in report.get("conflicts", []):
+        conflict_id = conflict["conflict_id"]
+        if conflict_id not in targets:
+            continue
+        if decision == "prefer_incoming":
+            selected_source = entry["collection"]
+            selected_value = conflict.get("incoming_value")
+        else:
+            candidates = list(conflict.get("existing_candidates") or [])
+            candidates.sort(
+                key=lambda item: (
+                    dates.get(str(item.get("source"))) or "",
+                    str(item.get("source") or ""),
+                ),
+                reverse=True,
+            )
+            selected = candidates[0] if candidates else {
+                "source": (conflict.get("existing_sources") or [None])[0],
+                "value": (conflict.get("existing_values") or [None])[0],
+            }
+            selected_source = selected.get("source")
+            selected_value = selected.get("value")
+        resolutions[conflict_id] = {
+            "conflict_id": conflict_id,
+            "fact_key": conflict.get("fact_key"),
+            "decision": decision,
+            "incoming_source": entry["collection"],
+            "incoming_value": conflict.get("incoming_value"),
+            "selected_source": selected_source,
+            "selected_value": selected_value,
+            "resolved_at": _now(),
+            "resolved_by": actor_id,
+        }
+    report = _apply_conflict_resolutions(report, resolutions)
+    _versions().update_one(
+        {"file_id": file_id, "version": version},
+        {"$set": {
+            "preflight": report,
+            "conflict_resolutions": resolutions,
+        }},
+    )
+    _catalog().update_one(
+        {"file_id": file_id},
+        {"$set": {
+            "preflight": report,
+            "updated_at": _now(),
+            "updated_by": actor_id,
+        }},
+    )
+    return {
+        "file_id": file_id,
+        "version": version,
+        "decision": decision,
+        "resolved_count": len(targets),
+        "preflight": report,
+    }
+
+
+def fact_resolution_map() -> dict[str, dict]:
+    """Published admin decisions used by runtime evidence conflict handling."""
+    if config.API_ENV == "testing":
+        return {}
+    result: dict[str, dict] = {}
+    try:
+        entries = [
+            _clean_doc(item) for item in _catalog().find({"status": "published"})
+        ]
+        entries = [item for item in entries if item]
+        entries.sort(key=lambda item: str(item.get("updated_at") or ""))
+        for entry in entries:
+            version = entry.get("published_version")
+            if version is None:
+                continue
+            version_doc = _versions().find_one({
+                "file_id": entry["file_id"], "version": int(version),
+            }) or {}
+            for value in (version_doc.get("conflict_resolutions") or {}).values():
+                fact_key = value.get("fact_key")
+                if fact_key:
+                    result[str(fact_key)] = dict(value)
+    except Exception:
+        return {}
+    return result
 
 
 def _version_documents(file_id: str, version: int) -> list[dict]:
@@ -304,7 +499,52 @@ def publish(file_id: str, bot, actor_id: str, version: Optional[int] = None) -> 
 
     previous = entry.get("published_version")
     documents = list(target_doc.get("documents") or [])
-    bot.upload_json_file(entry["collection"], documents)
+    existing_documents = _runtime_document_map()
+    quality_report = data_quality.preflight_documents(
+        documents,
+        existing_documents,
+        incoming_source=entry["collection"],
+    )
+    resolutions = dict(target_doc.get("conflict_resolutions") or {})
+    # A rollback endpoint is itself an explicit administrative choice to make
+    # that archived version authoritative again.
+    if version is not None and target != int(entry.get("latest_version") or target):
+        for conflict in quality_report.get("conflicts", []):
+            conflict_id = conflict["conflict_id"]
+            resolutions.setdefault(conflict_id, {
+                "conflict_id": conflict_id,
+                "fact_key": conflict.get("fact_key"),
+                "decision": "prefer_incoming",
+                "incoming_source": entry["collection"],
+                "incoming_value": conflict.get("incoming_value"),
+                "selected_source": entry["collection"],
+                "selected_value": conflict.get("incoming_value"),
+                "resolved_at": _now(),
+                "resolved_by": actor_id,
+                "reason": "explicit_rollback",
+            })
+    quality_report = _apply_conflict_resolutions(
+        quality_report, resolutions
+    )
+    _versions().update_one(
+        {"file_id": file_id, "version": target},
+        {"$set": {
+            "preflight": quality_report,
+            "conflict_resolutions": resolutions,
+        }},
+    )
+    if quality_report.get("unresolved_conflict_count", 0):
+        raise UnresolvedDataConflictError(
+            "يتضمن الملف تعارضات غير محلولة. استخدم resolve-conflicts "
+            "واختر الاحتفاظ بالموجود أو اعتماد الوارد قبل النشر."
+        )
+    runtime_documents = data_quality.apply_keep_existing_overrides(
+        documents,
+        existing_documents,
+        quality_report,
+        resolutions,
+    )
+    bot.upload_json_file(entry["collection"], runtime_documents)
     indexed = any(
         item.get("collection") == entry["collection"] and item.get("indexed")
         for item in bot.get_uploaded_files_list()
@@ -348,6 +588,7 @@ def publish(file_id: str, bot, actor_id: str, version: Optional[int] = None) -> 
             "published_version": target,
             "updated_at": now,
             "updated_by": actor_id,
+            "preflight": quality_report,
             **policy_set,
         }},
     )

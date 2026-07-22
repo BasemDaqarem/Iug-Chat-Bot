@@ -996,6 +996,40 @@ class TestUploadedChatFlows(ChatBase):
         self.assertNotIn("كلية الهندسة", text)
         self.assertNotIn("كلية الطب", text)
 
+    def test_named_program_digest_keeps_cutoff_above_student_rate(self):
+        name = "رسوم البكالوريوس ومعدلات القبول"
+        self.bot._uploaded._chunks[name] = [
+            f"[ملف: {name}] faculty_name: الهندسة program_name: هندسة الحاسوب "
+            "admission_criteria.min_high_school_percentage: 80"
+        ]
+        self.bot._uploaded._admissions.replace_collection(name, [{
+            "faculty_name": "الهندسة",
+            "degree": "بكالوريوس",
+            "program_name": "هندسة الحاسوب",
+            "admission_criteria": {
+                "min_high_school_percentage": 80,
+                "allowed_high_school_branches": ["علمي"],
+            },
+        }], rebuild=False)
+        self.bot._uploaded._admissions.rebuild(lambda fact: None)
+
+        with patch.object(
+            self.bot._uploaded,
+            "admission_context_lines",
+            wraps=self.bot._uploaded.admission_context_lines,
+        ) as digest_lookup:
+            res = self._chat(
+                "chat_with_all_files",
+                "معدلي 79 علمي، هل أحقق مفتاح هندسة الحاسوب في البيانات الحالية؟",
+                "named-program-cutoff-sess",
+            )
+
+        digest = "\n".join(res["top_chunks"])
+        self.assertIn("هندسة الحاسوب", digest)
+        self.assertIn("80%", digest)
+        self.assertIsNone(digest_lookup.call_args.kwargs["max_percentage"])
+        self.assertIsNone(digest_lookup.call_args.kwargs["branch"])
+
     def test_oversized_cutoff_table_falls_back_to_bounded_search(self):
         name = "معدلات القبول الضخمة"
         self.bot._uploaded._chunks[name] = [f"مفتاح {i}" for i in range(30)]
