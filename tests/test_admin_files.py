@@ -6,6 +6,7 @@ from unittest.mock import call, patch
 
 from fastapi.testclient import TestClient
 
+from app import file_catalog
 from app.api import create_app
 from app.chatbot import IUGChatbot
 from app.rbac import Role
@@ -103,6 +104,54 @@ class TestAdminFileActions(unittest.TestCase):
         with patch("app.file_catalog.get_file", return_value=None):
             r = self.client.delete("/api/admin/files/ghost", headers=_admin_headers())
         self.assertEqual(r.status_code, 404)
+
+    def test_preflight_endpoint_surfaces_duplicates_and_conflicts(self):
+        report = {
+            "exact_duplicate_count": 2,
+            "conflict_count": 1,
+            "unresolved_conflict_count": 1,
+            "can_publish": False,
+            "conflicts": [{"conflict_id": "c1"}],
+        }
+        with patch("app.file_catalog.preflight", return_value=report), \
+             patch("app.audit.record"):
+            r = self.client.post(
+                "/api/admin/files/preflight",
+                headers=_admin_headers(),
+                json={"collection": "رسوم_جديدة", "documents": [{"fee": 7}]},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["exact_duplicate_count"], 2)
+        self.assertFalse(r.json()["can_publish"])
+
+    def test_unresolved_conflict_blocks_publish_with_409(self):
+        with patch(
+            "app.file_catalog.publish",
+            side_effect=file_catalog.UnresolvedDataConflictError("conflict"),
+        ):
+            r = self.client.post(
+                "/api/admin/files/f1/publish", headers=_admin_headers()
+            )
+        self.assertEqual(r.status_code, 409)
+
+    def test_admin_can_resolve_all_conflicts_with_audited_decision(self):
+        resolved = {
+            "file_id": "f1",
+            "resolved_count": 2,
+            "preflight": {"unresolved_conflict_count": 0, "can_publish": True},
+        }
+        with patch("app.file_catalog.resolve_conflicts", return_value=resolved) as fn, \
+             patch("app.audit.record") as audit:
+            r = self.client.post(
+                "/api/admin/files/f1/resolve-conflicts",
+                headers=_admin_headers(),
+                json={"decision": "prefer_incoming", "conflict_ids": []},
+            )
+        self.assertEqual(r.status_code, 200)
+        fn.assert_called_once_with(
+            "f1", "ADMIN-1", decision="prefer_incoming", conflict_ids=[]
+        )
+        audit.assert_called_once()
 
 
 class TestDeleteLeavesNoOrphans(unittest.TestCase):

@@ -27,8 +27,14 @@ SESSIONS_COLLECTION = "chat_sessions"
 
 
 class TurnStatus:
-    VERIFIED = "verified"
-    PARTIAL = "partial"
+    GROUNDED = "grounded"
+    PARTIAL_GROUNDED = "partial_grounded"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    LIVE_VERIFICATION_REQUIRED = "live_verification_required"
+    VERIFICATION_DEGRADED = "verification_degraded"
+    # Compatibility aliases retained for callers that imported the old names.
+    VERIFIED = GROUNDED
+    PARTIAL = PARTIAL_GROUNDED
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     RETRIEVAL_FAILURE = "retrieval_failure"
     VALIDATION_FAILURE = "validation_failure"
@@ -39,6 +45,9 @@ LOW_CONFIDENCE_STATUSES = {
     TurnStatus.INSUFFICIENT_EVIDENCE,
     TurnStatus.RETRIEVAL_FAILURE,
     TurnStatus.VALIDATION_FAILURE,
+    TurnStatus.NEEDS_CLARIFICATION,
+    TurnStatus.LIVE_VERIFICATION_REQUIRED,
+    TurnStatus.VERIFICATION_DEGRADED,
 }
 
 

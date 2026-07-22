@@ -16,12 +16,27 @@ import re
 from typing import Iterable, List
 
 from app import query_rewrite
-from app.text_norm import normalize_arabic
+from app.text_norm import normalize_arabic, tokenize
 
 _PERCENT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*[%٪]")
 _MONEY_RE = re.compile(
     r"([0-9٠-٩۰-۹]+(?:[.,][0-9٠-٩۰-۹]+)?)\s*"
     r"(دينار(?:اً|ا)?|شيكل(?:اً|ا)?|دولار(?:اً|ا)?)"
+)
+_STRUCTURED_AMOUNT_RE = re.compile(
+    r"^\s*(?:[A-Za-z_][A-Za-z0-9_\[\].]*\.)?"
+    r"(?:amount|fee|credit_hour_fee|hour_fee|tuition)\s*:\s*"
+    r"([0-9٠-٩۰-۹]+(?:[.,][0-9٠-٩۰-۹]+)?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_STRUCTURED_KEY_RE = re.compile(
+    r"^\s*(?P<key>[A-Za-z_][A-Za-z0-9_\[\].]*)\s*:",
+    re.IGNORECASE,
+)
+_STRUCTURED_ENTITY_LEAVES = (
+    "program_name", "program", "specialization", "major", "department",
+    "faculty", "faculty_name", "college", "degree_or_request",
+    "service_type", "title", "topic", "category", "name",
 )
 _GRAD_TERMS = ("ماجستير", "الماجستير", "دكتوراه", "الدكتوراه", "اطروحه", "أطروحة")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>{}\[\]\"'`]+", re.IGNORECASE)
@@ -55,6 +70,11 @@ _LABELLED_DATE_RE = re.compile(
 _LINK_IDENTIFIER_RE = re.compile(
     r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", re.IGNORECASE
 )
+_INTERNAL_METADATA_KEY_RE = re.compile(
+    r"\b(?:link_id|action|embedding_text|document_type|intents?|keywords?)\s*:",
+    re.IGNORECASE,
+)
+_QUOTED_PHRASE_RE = re.compile(r'[«“"]([^»”"\n]{2,100})[»”"]')
 _DIGIT_TRANSLATION = str.maketrans(
     "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
     "01234567890123456789",
@@ -132,11 +152,22 @@ def unsupported_money_amounts(
     the validator targets quoted fees/prices, not transparent calculations.
     """
     norm_question = normalize_arabic(question)
-    if not any(mark in norm_question for mark in ("رسوم", "سعر", "تكلف", "مبلغ")):
+    if not any(mark in norm_question for mark in ("رسم", "رسوم", "سعر", "تكلف", "مبلغ")):
         return []
-    normalized_entities = [
-        normalize_arabic(term) for term in entity_terms if str(term).strip()
-    ]
+    normalized_entities = []
+    for term in entity_terms:
+        normalized = normalize_arabic(str(term))
+        if not normalized:
+            continue
+        variants = [normalized]
+        without_conjunction = normalized[1:] if normalized.startswith("و") else normalized
+        if without_conjunction != normalized:
+            variants.append(without_conjunction)
+        if without_conjunction.startswith("ال") and len(without_conjunction) > 4:
+            variants.append(without_conjunction[2:])
+        for variant in variants:
+            if len(variant) >= 3 and variant not in normalized_entities:
+                normalized_entities.append(variant)
     source_list = list(sources)
     unsupported: List[str] = []
     for match in _MONEY_RE.finditer(answer):
@@ -157,6 +188,57 @@ def unsupported_money_amounts(
                 if _canonical_amount(item.group(1)) == wanted_amount
                 and _canonical_currency(item.group(2)) == wanted_currency
             ]
+            structured_amounts = [
+                item for item in _STRUCTURED_AMOUNT_RE.finditer(source)
+                if _canonical_amount(item.group(1)) == wanted_amount
+            ]
+            # Uploaded fee records use ``amount`` as a numeric JOD field.
+            # Accept that exact structured value only for a single-record,
+            # entity-bound source; never use a number from a multi-record blob.
+            if (
+                not candidates
+                and wanted_currency == "دينار"
+                and len(structured_amounts) == 1
+            ):
+                norm_source = normalize_arabic(source)
+                all_structured = list(_STRUCTURED_AMOUNT_RE.finditer(source))
+                amount_line_start = source.rfind("\n", 0, structured_amounts[0].start()) + 1
+                amount_line_end = source.find("\n", structured_amounts[0].end())
+                if amount_line_end < 0:
+                    amount_line_end = len(source)
+                amount_line = source[amount_line_start:amount_line_end]
+                key_match = _STRUCTURED_KEY_RE.match(amount_line)
+                key = key_match.group("key") if key_match else ""
+                prefix = key.rsplit(".", 1)[0] if "." in key else ""
+                indexed_entity_match = False
+                if prefix and normalized_entities:
+                    sibling_re = re.compile(
+                        rf"^\s*{re.escape(prefix)}\."
+                        rf"(?:{'|'.join(_STRUCTURED_ENTITY_LEAVES)})\s*:\s*(.+)$",
+                        re.IGNORECASE | re.MULTILINE,
+                    )
+                    sibling_text = "\n".join(
+                        sibling.group(1) for sibling in sibling_re.finditer(source)
+                    )
+                    norm_sibling = normalize_arabic(sibling_text)
+                    indexed_entity_match = any(
+                        entity in norm_sibling for entity in normalized_entities
+                    )
+                if (
+                    indexed_entity_match
+                    or (
+                        len(all_structured) == 1
+                        and (
+                            not normalized_entities
+                            or any(
+                                entity in norm_source
+                                for entity in normalized_entities
+                            )
+                        )
+                    )
+                ):
+                    supported = True
+                    break
             if not candidates:
                 continue
             norm_source = normalize_arabic(source)
@@ -389,6 +471,146 @@ def link_identifier_claims(question: str, answer: str) -> List[str]:
     return found
 
 
+def exposed_internal_metadata(answer: str) -> List[str]:
+    """Structured retrieval keys are never user-facing steps or links."""
+    return list(dict.fromkeys(
+        match.group(0).rstrip(":").strip()
+        for match in _INTERNAL_METADATA_KEY_RE.finditer(answer)
+    ))
+
+
+def unsupported_quoted_procedure_labels(
+    question: str, answer: str, sources: Iterable[str]
+) -> List[str]:
+    """Reject invented interface labels/statuses in procedural answers."""
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in (
+        "كيف", "خطوه", "خطوات", "طلب", "بوابه", "تسجيل", "دفع",
+        "استخرج", "اتأكد", "اتاكد",
+    )):
+        return []
+    evidence = normalize_arabic("\n".join(sources))
+    question_tokens = set(tokenize(question))
+    status_marks = {
+        "مرسل", "تم الارسال", "قيد المعالجه", "قيد المراجعه", "مقبول",
+        "مرفوض", "مكتمل", "غير مكتمل",
+    }
+    unsupported: List[str] = []
+    for match in _QUOTED_PHRASE_RE.finditer(answer):
+        phrase = match.group(1).strip()
+        normalized = normalize_arabic(phrase)
+        if len(normalized) < 3 or normalized in evidence:
+            continue
+        phrase_tokens = set(tokenize(phrase))
+        prefix = normalize_arabic(answer[max(0, match.start() - 70):match.start()])
+        explicit_ui_label = any(mark in prefix for mark in (
+            "شاشه", "صفحه", "زر", "اختر", "حاله", "قائمه",
+        ))
+        if explicit_ui_label:
+            if phrase not in unsupported:
+                unsupported.append(phrase)
+            continue
+        # Quoting/reordering words already supplied by the user is phrasing,
+        # not an invented interface label.  A generic one-word caption is also
+        # harmless unless it asserts a concrete workflow status.
+        if (
+            phrase_tokens
+            and phrase_tokens.intersection(question_tokens)
+            and normalized not in status_marks
+        ):
+            continue
+        if len(phrase_tokens) == 1 and normalized not in status_marks:
+            continue
+        if phrase not in unsupported:
+            unsupported.append(phrase)
+    return unsupported
+
+
+def unsupported_workflow_status_claims(
+    question: str, answer: str, sources: Iterable[str]
+) -> List[str]:
+    """Do not invent a success/status signal for an uncertain web workflow."""
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in (
+        "انحفظ", "حفظ الطلب", "انرسل", "ارسل الطلب", "تاكيد واضح",
+        "تأكيد واضح", "حاله الطلب", "حالة الطلب",
+    )):
+        return []
+    evidence = normalize_arabic("\n".join(sources))
+    norm_answer = normalize_arabic(answer)
+    markers = (
+        "رساله تاكيد", "اشعار علي الشاشه",
+        "مقبول", "مرفوض", "قيد المراجعه", "قيد المعالجه",
+    )
+    unsupported: List[str] = []
+    for marker in markers:
+        start = norm_answer.find(marker)
+        if start < 0 or marker in evidence:
+            continue
+        prefix = norm_answer[max(0, start - 70):start]
+        if any(negation in prefix for negation in (
+            "لا توجد", "لا يوجد", "لا يمكن تاكيد", "لا يمكن التاكد",
+            "لا يمكن معرفه", "لا يمكن الجزم", "لا يمكن التحقق",
+            "لا نستطيع", "لم يظهر", "غير موثق", "غير واضحه",
+            "لا تعرض الادله", "لا تفترض",
+        )):
+            continue
+        unsupported.append(marker)
+    return unsupported
+
+
+def unresolved_external_entry_claim(
+    question: str, answer: str, sources: Iterable[str]
+) -> bool:
+    """Do not turn an explicitly unresolved visa/entry record into policy.
+
+    These questions are outside the university's authority and are especially
+    unsafe to answer from model memory.  A retrieved record marked unresolved
+    must result in a caveat and official verification, not an invented visa
+    class or issuing authority.
+    """
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in (
+        "تاشيره", "تصريح الدخول", "دخول غزه",
+    )):
+        return False
+    evidence = normalize_arabic("\n".join(sources))
+    if not any(mark in evidence for mark in (
+        "غير محسوم رسميا", "يحتاج تاكيد الجامعه", "غير موثق",
+    )):
+        return False
+    norm_answer = normalize_arabic(answer)
+    uncertainty = any(mark in norm_answer for mark in (
+        "لا تتوفر", "غير متاح", "غير موثق", "لا يمكن تاكيد",
+        "لا يمكن الجزم", "لا تحسم", "يحتاج تاكيد", "تحقق",
+    ))
+    return not uncertainty
+
+
+def unsupported_application_fee_refund_claim(
+    question: str, answer: str, sources: Iterable[str]
+) -> bool:
+    """A current waiver does not decide a refund for money already paid."""
+    norm_question = normalize_arabic(question)
+    if "دفعت" not in norm_question or "استرد" not in norm_question:
+        return False
+    evidence = normalize_arabic("\n".join(sources))
+    direct_policy = any(mark in evidence for mark in (
+        "رسوم طلب الالتحاق غير مسترده",
+        "رسوم طلب الالتحاق مسترده",
+        "يحق استرداد رسوم طلب الالتحاق",
+        "لا يحق استرداد رسوم طلب الالتحاق",
+    ))
+    if direct_policy:
+        return False
+    norm_answer = normalize_arabic(answer)
+    uncertainty = any(mark in norm_answer for mark in (
+        "غير موثق", "لا يمكن تاكيد", "لا يمكن الجزم", "لا تتوفر",
+        "لا توجد سياسه", "راجع", "تواصل",
+    ))
+    return not uncertainty
+
+
 def vague_admission_groups(answer: str, sources: Iterable[str]) -> List[str]:
     """وجود أسماء البرامج في الجدول يمنع اختصارها بـ«جميع البرامج/وغيرها»."""
     source_list = list(sources)
@@ -503,36 +725,55 @@ def mislabelled_guide_as_direct_link(
 ) -> List[str]:
     """لا نسمّي رابط دليل الخطوات بأنه رابط المورد المباشر نفسه."""
     norm_question = normalize_arabic(question)
-    if (
-        "رابط" not in norm_question
-        or not any(mark in norm_question for mark in ("نفسه", "مباشر"))
-        or any(mark in norm_question for mark in ("رابط الدليل", "رابط الخطوات"))
-    ):
-        return []
+    explicit_direct_request = bool(
+        "رابط" in norm_question
+        and any(mark in norm_question for mark in ("نفسه", "مباشر"))
+        and not any(mark in norm_question for mark in ("رابط الدليل", "رابط الخطوات"))
+    )
     source_list = list(sources)
     found: List[str] = []
     for match in _URL_RE.finditer(answer):
         raw_url = match.group(0)
         canonical = _canonical_url(raw_url)
+        line_start = answer.rfind("\n", 0, match.start()) + 1
+        line_end = answer.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(answer)
+        answer_line = normalize_arabic(answer[line_start:line_end])
+        procedural_portal_label = any(
+            mark in answer_line
+            for mark in ("بوابه", "بوابة", "رابط طلب الالتحاق", "ادخل الى")
+        )
+        if not explicit_direct_request and not procedural_portal_label:
+            continue
         records = [
             source for source in source_list
             if raw_url.rstrip(".,،؛;:!?؟)]}»\"'") in source
         ]
         if not records:
             continue
-        record_blob = normalize_arabic("\n".join(records))
+        nearby_records = []
+        for source in records:
+            position = source.find(raw_url.rstrip(".,،؛;:!?؟)]}»\"'"))
+            if position >= 0:
+                nearby_records.append(source[max(0, position - 500):position + 500])
+        nearby_blob = normalize_arabic("\n".join(nearby_records))
         is_guide = (
             "/guide/" in canonical
-            or "title: خطوات" in record_blob
-            or "الموضوع: خطوات" in record_blob
-            or "دليل الخطوات" in record_blob
+            or "title: خطوات" in nearby_blob
+            or "الموضوع: خطوات" in nearby_blob
+            or "دليل الخطوات" in nearby_blob
         )
         # حقل link_id يثبت أن هدفاً داخلياً ذُكر بلا URL؛ الرابط الظاهر
         # والموسوم «خطوات/guide» يبقى مرجعاً للخطوات لا رابط الهدف نفسه.
         has_unresolved_target = any(
             "link_id:" in normalize_arabic(source) for source in source_list
         )
-        if is_guide and has_unresolved_target and raw_url not in found:
+        if (
+            is_guide
+            and (procedural_portal_label or has_unresolved_target)
+            and raw_url not in found
+        ):
             found.append(raw_url)
     return found
 
@@ -548,6 +789,19 @@ def contradicted_active_branch(answer: str, sources: Iterable[str]) -> List[str]
     if not expected:
         return []
     norm_expected = normalize_arabic(expected)
+    norm_answer_full = normalize_arabic(answer).strip()
+    # In a rejected eligibility decision, mentioning the program's required
+    # branch explains *why* the user's current branch is ineligible; it is not
+    # stale-context leakage or replacement of the user's branch.
+    eligibility_rejection = (
+        "لا يسمح", "لا يمكنك", "لا يمكن", "لا يتيح", "لا تحقق",
+        "غير مسموح", "غير متاح", "غير موهل", "غير موجود", "غير وارد",
+        "لا يقبل", "لا تقبل", "لا تذكر", "لا تشمل", "لا يرد",
+    )
+    if norm_answer_full.startswith(("لا", "ليس")) or any(
+        mark in norm_answer_full for mark in eligibility_rejection
+    ):
+        return []
     branches = ("علمي", "أدبي", "شرعي", "تجاري", "صناعي")
     conflicts: List[str] = []
     for line in answer.splitlines():
@@ -656,6 +910,216 @@ def inconsistent_admission_comparisons(question: str, answer: str) -> List[str]:
     return contradictions
 
 
+def ignored_admission_branch_restriction(
+    question: str,
+    answer: str,
+    sources: Iterable[str],
+    entity_terms: Iterable[str],
+) -> List[str]:
+    """Reject a positive eligibility answer when the named program excludes
+    the user's branch.
+
+    Rate and branch are conjunctive admission conditions.  A high rate must
+    never turn an explicitly scientific-only program into an eligible option
+    for a literary-branch student.
+    """
+    if not query_rewrite.has_admission_intent(question):
+        return []
+    norm_question = normalize_arabic(question)
+    branches = ("علمي", "ادبي", "شرعي", "تجاري", "صناعي")
+    requested = next(
+        (branch for branch in branches if branch in norm_question), None
+    )
+    terms = []
+    for value in entity_terms:
+        term = normalize_arabic(str(value))
+        if term.startswith("ال") and len(term) > 4:
+            term = term[2:]
+        if len(term) >= 3 and term not in terms:
+            terms.append(term)
+    if requested is None or not terms:
+        return []
+
+    def lexical_core(value: str) -> str:
+        values = []
+        for token in re.findall(r"[\w\u0600-\u06ff]+", normalize_arabic(value)):
+            if token.startswith("و") and len(token) > 4:
+                token = token[1:]
+            if token.startswith("ال") and len(token) > 4:
+                token = token[2:]
+            values.append(token)
+        return " ".join(values)
+
+    entity_phrase = " ".join(terms)
+
+    allowed_sets = []
+    for source in sources:
+        for raw_line in source.splitlines():
+            line = normalize_arabic(raw_line)
+            # Require the entity as one adjacent phrase.  A wide faculty row
+            # can contain ``تعليم العلوم`` and ``الحاسوب وأساليب تدريسه`` as
+            # two different programs; their separated tokens must not be
+            # mistaken for the single program ``علم الحاسوب``.
+            if entity_phrase not in lexical_core(line) or "الفروع" not in line:
+                continue
+            branch_part = line.split("الفروع", 1)[1].split("|", 1)[0]
+            allowed = {branch for branch in branches if branch in branch_part}
+            if allowed:
+                allowed_sets.append(allowed)
+    if not allowed_sets or any(requested in allowed for allowed in allowed_sets):
+        return []
+
+    norm_answer = normalize_arabic(answer)
+    rejection_marks = (
+        "لا يسمح", "لا يمكنك", "لا يمكن", "لا يتيح", "لا تحقق",
+        "غير مسموح", "غير متاح", "غير موهل", "غير موجود", "غير وارد",
+        "لا يقبل", "لا تقبل", "لا تذكر", "لا تشمل", "لا يرد",
+    )
+    if norm_answer.strip().startswith(("لا", "ليس")) or any(
+        mark in norm_answer for mark in rejection_marks
+    ):
+        return []
+    allowed_label = "، ".join(sorted(set().union(*allowed_sets)))
+    return [f"الفرع {requested} غير موجود ضمن الفروع المسموحة ({allowed_label})"]
+
+
+def missing_cutoff_branch_scope(
+    question: str,
+    answer: str,
+    sources: Iterable[str],
+    entity_terms: Iterable[str],
+) -> List[str]:
+    """A program cutoff is incomplete when its branch scope is known but omitted."""
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in (
+        "الحد الادني", "اقل معدل", "مفتاح", "معدل القبول",
+    )):
+        return []
+    # If the user already supplied a branch (typically in an eligibility
+    # comparison), the answer need not repeat it as long as the branch/rate
+    # decision is correct.  This check is for a bare cutoff question whose
+    # answer would otherwise hide an important scope restriction.
+    if any(branch in set(tokenize(question)) for branch in (
+        "علمي", "ادبي", "شرعي", "تجاري", "صناعي",
+    )):
+        return []
+    terms = []
+    for value in entity_terms:
+        term = normalize_arabic(str(value))
+        if term.startswith("ال") and len(term) > 4:
+            term = term[2:]
+        if len(term) >= 3 and term not in terms:
+            terms.append(term)
+    if not terms:
+        return []
+
+    def lexical_core(value: str) -> str:
+        values = []
+        for token in re.findall(r"[\w\u0600-\u06ff]+", normalize_arabic(value)):
+            if token.startswith("و") and len(token) > 4:
+                token = token[1:]
+            if token.startswith("ال") and len(token) > 4:
+                token = token[2:]
+            values.append(token)
+        return " ".join(values)
+
+    entity_phrase = " ".join(terms)
+    branches = ("علمي", "ادبي", "شرعي", "تجاري", "صناعي")
+    expected: set[str] = set()
+    for source in sources:
+        for raw_line in source.splitlines():
+            line = normalize_arabic(raw_line)
+            if entity_phrase not in lexical_core(line) or "الفروع" not in line:
+                continue
+            branch_part = line.split("الفروع", 1)[1].split("|", 1)[0]
+            expected.update(branch for branch in branches if branch in branch_part)
+    if not expected:
+        return []
+    norm_answer = normalize_arabic(answer)
+    return [] if any(branch in norm_answer for branch in expected) else sorted(expected)
+
+
+def inconsistent_eligibility_polarity(question: str, answer: str) -> bool:
+    """An eligibility answer must not open with yes and conclude ineligible."""
+    if not query_rewrite.has_admission_intent(question):
+        return False
+    norm = normalize_arabic(answer).strip()
+    rejection_marks = (
+        "لا يحقق", "لا تحقق", "لا يفي", "غير مول", "غير مسموح",
+        "لا يسمح", "لا يمكنك", "لا يمكن قبول",
+    )
+    return norm.startswith("نعم") and any(mark in norm for mark in rejection_marks)
+
+
+def guaranteed_final_admission(question: str, answer: str) -> List[str]:
+    """Meeting an indexed cutoff is preliminary eligibility, not admission."""
+    if not query_rewrite.has_admission_intent(question):
+        return []
+    norm = normalize_arabic(answer)
+    guarantee_marks = (
+        "يقبلك في", "سيتم قبولك", "ستقبل في", "قبولك مضمون",
+        "مضمون القبول", "مقبول نهاييا", "تضمن قبولك", "تقبلك",
+    )
+    found = []
+    for marker in guarantee_marks:
+        start = norm.find(marker)
+        if start < 0:
+            continue
+        prefix = norm[max(0, start - 12):start]
+        if not any(neg in prefix for neg in ("لا", "ليس", "غير")):
+            found.append(marker)
+    return found
+
+
+def missing_competitive_admission_caveat(
+    question: str, answer: str, sources: Iterable[str]
+) -> bool:
+    """A dated competitive cutoff must never be presented as a fixed fact."""
+    if not query_rewrite.has_admission_intent(question):
+        return False
+    norm_question = normalize_arabic(question)
+    if "طب" not in norm_question:
+        return False
+    source_blob = normalize_arabic("\n".join(sources))
+    if not any(mark in source_blob for mark in ("تنافسي", "يتغير", "متغير")):
+        return False
+    if not re.search(r"2025\s*[/\-]\s*2026", source_blob):
+        return False
+    norm_answer = normalize_arabic(answer)
+    has_date = bool(re.search(r"2025\s*[/\-]\s*2026", norm_answer))
+    has_caveat = any(
+        mark in norm_answer
+        for mark in ("تنافسي", "يتغير", "متغير", "عدد المتقدمين")
+    )
+    return not (has_date and has_caveat)
+
+
+def wrong_external_certificate_order(
+    question: str, answer: str, sources: Iterable[str]
+) -> bool:
+    """Foreign-certificate data entry must precede university-number lookup."""
+    norm_question = normalize_arabic(question)
+    if not any(mark in norm_question for mark in ("خارج غزه", "خارج فلسطين", "شهاده من الخارج")):
+        return False
+    norm_sources = normalize_arabic("\n".join(sources))
+    if "شهاده" not in norm_sources or "الرقم الجامعي" not in norm_sources:
+        return False
+    norm_answer = normalize_arabic(answer)
+    certificate_positions = [
+        pos for mark in ("ارسال الشهاده", "ارسل الشهاده", "ارسلها اولا")
+        if (pos := norm_answer.find(mark)) >= 0
+    ]
+    number_positions = [
+        pos for mark in ("الحصول علي الرقم الجامعي", "استخراج الرقم الجامعي")
+        if (pos := norm_answer.find(mark)) >= 0
+    ]
+    return bool(
+        certificate_positions
+        and number_positions
+        and min(number_positions) < min(certificate_positions)
+    )
+
+
 def branch_exclusivity_overclaim(
     question: str, answer: str, sources: Iterable[str]
 ) -> bool:
@@ -741,6 +1205,18 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
                 "ادعيتَ أن المعلومة غير موجودة رغم أن عقد الأدلة عدّها مسندة — "
                 "أجب من الدليل المتاح ولا تستخدم نفياً عاماً."
             )
+    if unresolved_external_entry_claim(question, answer, evidence):
+        found.append(
+            "حوّلتَ سياسة دخول/تأشيرة مصنفة في الدليل كغير محسومة إلى حكم "
+            "قطعي — قل إن نوع التأشيرة أو جهة التصريح لا يمكن تأكيدهما من "
+            "البيانات الحالية، ولا تستخدم المعرفة العامة لتخمينهما."
+        )
+    if unsupported_application_fee_refund_claim(question, answer, evidence):
+        found.append(
+            "استنتجتَ حكم استرداد رسوم طلب الالتحاق من إعفاء أو معلومة "
+            "مجاورة، مع أن المستخدم دفع فعلاً ولا توجد سياسة استرداد مباشرة "
+            "في الدليل — صرّح بأن الاسترداد غير موثق ووجّه للقبول والتسجيل."
+        )
     broken = violated_exclusions(answer, excluded)
     if broken:
         found.append(
@@ -773,6 +1249,32 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
             + " — هذا ليس رابطاً قابلاً للفتح. الرابط يجب أن يبدأ بـ http:// "
             "أو https://؛ إن لم يوجد في المقاطع فصرّح بعدم توفره."
         )
+    internal_keys = exposed_internal_metadata(answer)
+    if internal_keys:
+        found.append(
+            "عرضتَ مفاتيح ميتاداتا داخلية كأنها جزء من جواب المستخدم: "
+            + "، ".join(internal_keys)
+            + " — احذف المفاتيح والمعرّفات الداخلية وصغ المعلومة العربية المسندة فقط."
+        )
+    unsupported_labels = unsupported_quoted_procedure_labels(
+        question, answer, evidence
+    )
+    if unsupported_labels:
+        found.append(
+            "اخترعتَ تسمية أو حالة واجهة غير موجودة حرفياً في الدليل: "
+            + "، ".join(unsupported_labels)
+            + " — احذفها ولا تستنتج حالات شاشة من إجراء عام."
+        )
+    unsupported_statuses = unsupported_workflow_status_claims(
+        question, answer, evidence
+    )
+    if unsupported_statuses:
+        found.append(
+            "ادعيتَ حالة واجهة غير موثقة لإثبات حفظ أو إرسال الطلب: "
+            + "، ".join(unsupported_statuses)
+            + " — لا تفترض رسالة نجاح أو حالة طلب؛ وجّه للتحقق من الطلب "
+            "في البوابة أو من القبول والتسجيل."
+        )
     mislabelled_guides = mislabelled_guide_as_direct_link(
         question, answer, evidence
     )
@@ -782,7 +1284,18 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
             + "، ".join(mislabelled_guides)
             + " — سمّه دليل الخطوات فقط؛ الرابط المباشر غير وارد في الدليل."
         )
-    vague_groups = vague_admission_groups(answer, evidence)
+    norm_question = normalize_arabic(question)
+    admission_option_list = (
+        query_rewrite.has_admission_intent(question)
+        and any(
+            marker in norm_question
+            for marker in ("خيارات", "تخصصات", "كليات", "برامج", "القائمه")
+        )
+    )
+    vague_groups = (
+        vague_admission_groups(answer, evidence)
+        if admission_option_list else []
+    )
     if vague_groups:
         found.append(
             "اختصرتَ قائمة قبول تحمل أسماء البرامج بعبارات مبهمة: "
@@ -790,7 +1303,10 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
             + " — اذكر أسماء البرامج الموجودة بعد «البرامج:» لكل كلية، "
             "ولا تستخدم «جميع البرامج» أو «وغيرها» بديلاً عنها."
         )
-    missing_faculties = missing_admission_faculties(answer, evidence)
+    missing_faculties = (
+        missing_admission_faculties(answer, evidence)
+        if admission_option_list else []
+    )
     if missing_faculties:
         found.append(
             "أسقطتَ كليات مؤهلة ما زالت موجودة في جدول الفرع/المعدل المصفّى: "
@@ -837,6 +1353,51 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
             + "، ".join(comparison_errors)
             + " — المفتاح الأصغر من معدل الطالب أو المساوي له يحققه الطالب؛ "
             "راجع كل سطر وأصلح الوصف والقائمة."
+        )
+    ignored_branch = ignored_admission_branch_restriction(
+        question, answer, evidence, entity_terms
+    )
+    if ignored_branch:
+        found.append(
+            "تجاهلتَ قيد فرع الثانوية عند تقرير الأهلية: "
+            + "، ".join(ignored_branch)
+            + " — شروط المعدل والفرع تُطبّق معاً؛ ارفض الأهلية حتى لو كان "
+            "المعدل أعلى من المفتاح."
+        )
+    missing_scope = missing_cutoff_branch_scope(
+        question, answer, evidence, entity_terms
+    )
+    if missing_scope:
+        found.append(
+            "ذكرتَ مفتاح القبول وأسقطتَ نطاق فرع الثانوية المسند للبرنامج: "
+            + "، ".join(missing_scope)
+            + " — اذكر المعدل والفروع المسموح بها معاً."
+        )
+    if inconsistent_eligibility_polarity(question, answer):
+        found.append(
+            "بدأتَ جواب الأهلية بـ«نعم» ثم قررت أن الشرط غير متحقق — "
+            "ابدأ بـ«لا» وقدّم قراراً واحداً واضحاً ومتسقاً."
+        )
+    guarantees = guaranteed_final_admission(question, answer)
+    if guarantees:
+        found.append(
+            "حوّلتَ تحقق الشرط المبدئي إلى ضمان قبول نهائي: "
+            + "، ".join(guarantees)
+            + " — قل فقط إن المستخدم يحقق الشرط المبدئي؛ القبول النهائي "
+            "ليس مضموناً ويتبع إجراءات الجامعة والمنافسة."
+        )
+    if missing_competitive_admission_caveat(question, answer, evidence):
+        found.append(
+            "عرضتَ مفتاح الطب التنافسي المؤرخ كأنه رقم ثابت — اذكر أن 91% "
+            "هو مرجع عام 2025/2026 فقط، وأن المفتاح تنافسي ومتغير ولا يضمن "
+            "القبول النهائي."
+        )
+    if wrong_external_certificate_order(question, answer, evidence):
+        found.append(
+            "عكستَ ترتيب حالة الشهادة الصادرة من الخارج: إذا لم تكن بياناتها "
+            "مسجلة، تُرسل الشهادة أولاً إلى القبول والتسجيل لإدخال البيانات، "
+            "ثم يُستخرج الرقم الجامعي ويُستكمل الطلب الإلكتروني. لا تساوِ بين "
+            "وجود الطالب خارج غزة وكون الشهادة صادرة من الخارج."
         )
     if branch_exclusivity_overclaim(question, answer, evidence):
         found.append(

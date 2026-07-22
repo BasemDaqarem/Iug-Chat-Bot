@@ -8,6 +8,7 @@ import pytest
 
 from app import config
 from app.chunking import build_uploaded_chunks
+from app.errors import ChatbotError
 from app.lexical import BM25
 from app.rbac import Principal
 from app.retrieval import hybrid_candidates
@@ -96,16 +97,14 @@ class TestTurnReliability(ChatBase):
                  return_value=["[ملف: الدليل] لا يتوفر رابط مباشر."],
              ), \
              patch("app.llm._post_with_retry", side_effect=unsafe_llm):
-            result = self.bot.chat_with_all_files(
-                "أعطني رابط النموذج نفسه", "generation-budget"
-            )
+            with pytest.raises(ChatbotError) as rejected:
+                self.bot.chat_with_all_files(
+                    "أعطني رابط النموذج نفسه", "generation-budget"
+                )
 
-        metadata = result["retrieval_metadata"]
         assert len(calls) == 3
-        assert metadata["llm_generation_count"] == 3
-        assert metadata["llm_generation_limit"] == 3
-        assert metadata["turn_status"] == TurnStatus.VALIDATION_FAILURE
-        assert metadata["final_answer_origin"] == "llm"
+        assert rejected.value.details["verification_outcome"] == "rejected"
+        assert self.bot.get_history("generation-budget") == []
 
     def test_stream_and_blocking_use_identical_validated_pipeline(self):
         answer = "رسوم التأجيل 10 دنانير."

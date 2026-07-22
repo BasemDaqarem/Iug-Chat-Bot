@@ -7,6 +7,7 @@ supported, and exposes structured metadata to tests and diagnostics.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
 import re
 from typing import Any
 
@@ -16,7 +17,10 @@ from app.text_norm import normalize_arabic, tokenize
 
 _FIELD_MARKERS = {
     "fee": ("رسوم", "سعر", "دينار", "credit_hour_fee", "ثوابت"),
-    "requirements": ("شروط", "متطلبات", "يشترط", "معدل", "min_high_school"),
+    "requirements": (
+        "شرط", "شروط", "متطلبات", "يشترط", "بشرط", "معدل",
+        "علامة", "علامه", "min_high_school",
+    ),
     "link": ("https://", "رابط", "بوابة", "صفحة"),
     "contact": ("@", "بريد", "هاتف", "تواصل", "+970"),
     "date": ("موعد", "تاريخ", "202", "الفصل"),
@@ -24,7 +28,19 @@ _FIELD_MARKERS = {
     "programs": ("تخصص", "برنامج", "مسار", "كلية", "البرامج:"),
     "source": ("ملف:", "مصدر", "تاريخ إدخال"),
     "admissions": ("قبول", "مفتاح", "min_high_school", "%"),
+    "admission_cutoff": (
+        "مفتاح القبول", "معدل القبول", "الحد الادنى", "الحد الأدنى",
+        "min_high_school", "نسبه الثانويه", "نسبة الثانوية", "%",
+    ),
+    "branch": ("الفرع", "علمي", "ادبي", "أدبي", "شرعي", "صناعي", "تجاري"),
+    "account_access": ("حساب", "كلمه المرور", "كلمة المرور", "استعاده", "استعادة"),
     "scholarships": ("منحة", "منح", "إعفاء", "مساعدة مالية"),
+    "scholarship_rate": (
+        "نسبة المنحة", "discount_percentage", "نسبة الإعفاء",
+    ),
+    "scholarship_retention": (
+        "معدل الاستمرار", "معدل استمرار", "retention_gpa_required",
+    ),
     "procedures": ("خطوة", "طلب", "إدخال", "تسجيل", "دفع"),
     "deadlines": ("موعد", "تاريخ", "آخر", "الفصل"),
     "contacts": ("@", "هاتف", "بريد", "عنوان", "تواصل"),
@@ -51,7 +67,8 @@ _DOMAIN_FIELD = {
 _SENSITIVE_FIELDS = {
     "fee", "requirements", "link", "contact", "date", "documents",
     "programs", "admissions", "scholarships", "procedures", "deadlines",
-    "contacts", "people", "privacy",
+    "contacts", "people", "privacy", "admission_cutoff", "branch",
+    "account_access", "scholarship_rate", "scholarship_retention",
 }
 
 
@@ -67,6 +84,8 @@ class EvidenceContract:
     entity_terms: list[str] = field(default_factory=list)
     entity_supported: bool = True
     field_evidence: dict[str, list[int]] = field(default_factory=dict)
+    claim_coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    unresolved_clauses: list[str] = field(default_factory=list)
 
     def as_metadata(self) -> dict[str, Any]:
         return asdict(self)
@@ -81,6 +100,20 @@ class EvidenceContract:
             lines.append("- غير المسند بوضوح: " + "، ".join(self.missing_fields))
         if self.contradictions:
             lines.append("- تعارضات تحتاج حذراً: " + "؛ ".join(self.contradictions))
+        if self.unresolved_clauses:
+            lines.append(
+                "- مقاطع لم يُحسم معناها بعد: "
+                + "؛ ".join(self.unresolved_clauses)
+            )
+            lines.append(
+                "- لا تجب عن هذه المقاطع بالتخمين؛ اطلب توضيحاً واحداً قصيراً."
+            )
+        for claim_id, coverage in self.claim_coverage.items():
+            state = "مسند" if coverage.get("resolved") else "غير مسند"
+            lines.append(
+                f"- {claim_id} ({coverage.get('surface_text')} → "
+                f"{coverage.get('canonical_field')}): {state}"
+            )
         if self.entity_terms:
             lines.append("- نطاق الكيان المطلوب: " + "، ".join(self.entity_terms))
         if not self.entity_supported:
@@ -102,6 +135,13 @@ _NUMBER_RE = re.compile(r"(?<!\w)[0-9٠-٩۰-۹]+(?:[.,][0-9٠-٩۰-۹]+)?")
 _URL_RE = re.compile(r"https?://[^\s<>{}\[\]\"']+", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"[\w.%+-]+@[\w.-]+\.[A-Za-z\u0600-\u06ff]{2,}")
 _PHONE_RE = re.compile(r"(?:\+|00)?[0-9٠-٩۰-۹][0-9٠-٩۰-۹\s().-]{6,}")
+_STRUCTURED_LINE_RE = re.compile(
+    r"^\s*(?P<key>[A-Za-z_][A-Za-z0-9_\[\].]*)\s*:\s*(?P<value>.+)$",
+    re.MULTILINE,
+)
+_STRUCTURED_FEE_LEAVES = {
+    "amount", "fee", "credit_hour_fee", "hour_fee", "tuition",
+}
 _DATE_RE = re.compile(
     r"(?:19|20)[0-9]{2}(?:\s*[-/]\s*[0-9]{1,2}(?:\s*[-/]\s*[0-9]{1,2})?)?"
 )
@@ -113,11 +153,12 @@ _DATE_WORDS = (
 )
 _ENTITY_STOPWORDS = {
     "اعطني", "اريد", "بدي", "ممكن", "السوال", "سوال", "ما", "ماذا",
-    "هل", "كم", "كيف", "متى", "اين", "وين", "شو", "عن", "في", "من",
+    "هل", "كم", "كيف", "متى", "اين", "وين", "شو", "وما", "وشو", "وكم", "عن", "في", "من",
     "الى", "على", "مع", "هذا", "هذه", "ذلك", "الجامعه", "الاسلاميه",
     "غزه", "كليه", "كليات", "قسم", "تخصص", "برنامج", "برامج", "مرحله",
     "بكالوريوس", "ماجستير", "دكتوراه", "رسوم", "سعر", "تكلفه", "ساعه",
     "شروط", "متطلبات", "قبول", "معدل", "رابط", "صفحه", "بوابه", "مصدر",
+    "مفتاح", "المفتاح", "مفتاحه", "مفتاحها", "القبول", "الحد", "الادنى",
     "تاريخ", "موعد", "وثايق", "اوراق", "تواصل", "هاتف", "بريد", "اسم",
     "القائمه", "الكامله", "جميع", "كل", "المذكور", "السابق",
 }
@@ -127,6 +168,25 @@ def _entity_terms(plan: QueryPlan) -> list[str]:
     terms = []
     for token in tokenize(plan.standalone_query):
         normalized = normalize_arabic(token)
+        if len(normalized) < 3 or normalized in _ENTITY_STOPWORDS:
+            continue
+        if normalized.isdigit() or normalized in terms:
+            continue
+        terms.append(normalized)
+    return terms[:8]
+
+
+def _claim_entity_terms(value: str | None) -> list[str]:
+    if not value:
+        return []
+    terms = []
+    for token in tokenize(value):
+        normalized = normalize_arabic(token)
+        # Arabic definite articles are not part of entity identity: catalog
+        # rows may say ``العلوم | البرامج: عام`` while the question says
+        # ``العلوم العام``.  Compare their lexical cores in both cases.
+        if normalized.startswith("ال") and len(normalized) > 4:
+            normalized = normalized[2:]
         if len(normalized) < 3 or normalized in _ENTITY_STOPWORDS:
             continue
         if normalized.isdigit() or normalized in terms:
@@ -153,17 +213,71 @@ def _has_exact_value(field_name: str, text: str) -> bool:
         )
     if field_name == "source":
         return "[ملف:" in text or "[مصدر" in text
-    if field_name == "admissions":
+    if field_name in {"admissions", "admission_cutoff"}:
+        if field_name == "admission_cutoff":
+            has_threshold_marker = any(
+                mark in norm
+                for mark in (
+                    "مفتاح القبول", "معدل القبول", "الحد الادنى",
+                    "min_high_school", "نسبه الثانويه", "%",
+                )
+            )
+            return bool(_NUMBER_RE.search(text)) and has_threshold_marker
         return bool(_NUMBER_RE.search(text)) or any(
             mark in norm for mark in ("تنافسي", "min_high_school", "مفتاح")
         )
+    if field_name == "scholarship_rate":
+        return bool(_NUMBER_RE.search(text)) and any(
+            mark in norm for mark in ("discount_percentage", "نسبه المنحه")
+        )
+    if field_name == "scholarship_retention":
+        return bool(_NUMBER_RE.search(text)) and any(
+            mark in norm
+            for mark in ("retention_gpa_required", "معدل الاستمرار", "معدل استمرار")
+        )
+    if field_name == "branch":
+        item_tokens = set(tokenize(text))
+        return any(
+            mark in item_tokens
+            for mark in ("علمي", "ادبي", "شرعي", "صناعي", "تجاري")
+        )
     return True
+
+
+def _structured_fee_matches_entity(
+    text: str, entity_terms: list[str]
+) -> bool | None:
+    """Bind a fee to its indexed record instead of a neighboring record.
+
+    ``None`` means the evidence is not an indexed structured fee block and
+    should continue through the ordinary natural-language check.
+    """
+    records: dict[str, list[tuple[str, str]]] = {}
+    found_indexed_fee = False
+    for match in _STRUCTURED_LINE_RE.finditer(text):
+        key = match.group("key")
+        leaf = key.rsplit(".", 1)[-1].lower()
+        prefix = key.rsplit(".", 1)[0] if "." in key else ""
+        records.setdefault(prefix, []).append((leaf, match.group("value")))
+        if prefix and leaf in _STRUCTURED_FEE_LEAVES:
+            found_indexed_fee = True
+    if not found_indexed_fee:
+        return None
+    for fields in records.values():
+        if not any(leaf in _STRUCTURED_FEE_LEAVES for leaf, _ in fields):
+            continue
+        record_text = normalize_arabic("\n".join(value for _, value in fields))
+        if not entity_terms or all(term in record_text for term in entity_terms):
+            return True
+    return False
 
 
 def _matching_evidence_indexes(
     field_name: str,
     evidence: list[str],
     entity_terms: list[str],
+    *,
+    require_all_entity_terms: bool = False,
 ) -> list[int]:
     markers = _FIELD_MARKERS.get(field_name, (field_name,))
     matches = []
@@ -175,10 +289,23 @@ def _matching_evidence_indexes(
         # Source/privacy/general fields describe the evidence envelope itself.
         needs_entity = field_name not in {"source", "privacy", "general"}
         norm_item = normalize_arabic(item)
-        if needs_entity and entity_terms and not any(
-            term in norm_item for term in entity_terms
-        ):
-            continue
+        if needs_entity and entity_terms:
+            structured_fee_match = (
+                _structured_fee_matches_entity(item, entity_terms)
+                if field_name == "fee"
+                else None
+            )
+            entity_match = (
+                structured_fee_match
+                if structured_fee_match is not None
+                else (
+                    all(term in norm_item for term in entity_terms)
+                    if require_all_entity_terms
+                    else any(term in norm_item for term in entity_terms)
+                )
+            )
+            if not entity_match:
+                continue
         matches.append(index)
     return matches
 
@@ -205,37 +332,116 @@ def build_evidence_contract(
     evidence: list[str],
     *,
     authoritative_evidence: list[str] | None = None,
+    evidence_conflicts: list[dict[str, Any]] | None = None,
 ) -> EvidenceContract:
     authoritative_evidence = authoritative_evidence or []
-    all_evidence = [*authoritative_evidence, *evidence]
+    evidence_conflicts = evidence_conflicts or []
+    all_evidence = list(dict.fromkeys([*authoritative_evidence, *evidence]))
     combined = "\n".join(all_evidence)
-    required = list(dict.fromkeys([
-        *frame.requested_fields,
-        *(_DOMAIN_FIELD.get(domain, domain) for domain in plan.domains if domain != "general"),
-    ]))
+    if plan.claims:
+        required = list(dict.fromkeys(
+            claim.canonical_field for claim in plan.claims
+        ))
+    else:
+        required = list(dict.fromkeys([
+            *frame.requested_fields,
+            *(
+                _DOMAIN_FIELD.get(domain, domain)
+                for domain in plan.domains if domain != "general"
+            ),
+        ]))
     if not required:
         required = ["general"]
 
     # Names in privacy-sensitive questions must never be echoed into the
     # system prompt merely for evidence matching.
-    entity_terms = [] if "privacy" in required else _entity_terms(plan)
+    if "privacy" in required:
+        entity_terms = []
+    elif plan.claims:
+        entity_terms = list(dict.fromkeys(
+            term
+            for claim in plan.claims
+            for term in _claim_entity_terms(claim.entity)
+        ))
+    else:
+        entity_terms = _entity_terms(plan)
     field_evidence: dict[str, list[int]] = {}
     resolved = []
-    for field_name in required:
-        indexes = _matching_evidence_indexes(
-            field_name, all_evidence, entity_terms
-        )
-        field_evidence[field_name] = indexes
-        if indexes:
-            resolved.append(field_name)
+    claim_coverage: dict[str, dict[str, Any]] = {}
+    if plan.claims:
+        evidence_ids = [
+            hashlib.sha256(item.encode("utf-8")).hexdigest()
+            for item in all_evidence
+        ]
+        for claim in plan.claims:
+            claim_terms = (
+                [] if claim.canonical_field == "privacy"
+                else _claim_entity_terms(claim.entity)
+            )
+            indexes = _matching_evidence_indexes(
+                claim.canonical_field,
+                all_evidence,
+                claim_terms,
+                require_all_entity_terms=bool(
+                    claim_terms
+                    and claim.canonical_field in {
+                        "fee", "admission_cutoff", "branch", "programs",
+                        "scholarships", "scholarship_rate",
+                        "scholarship_retention",
+                    }
+                ),
+            )
+            prior = field_evidence.setdefault(claim.canonical_field, [])
+            field_evidence[claim.canonical_field] = list(dict.fromkeys([
+                *prior, *indexes,
+            ]))
+            claim_conflicts = [
+                value for value in evidence_conflicts
+                if value.get("canonical_field") == claim.canonical_field
+            ]
+            claim_coverage[claim.claim_id] = {
+                "claim_id": claim.claim_id,
+                "surface_text": claim.surface_text,
+                "canonical_field": claim.canonical_field,
+                "evidence_ids": [evidence_ids[index] for index in indexes],
+                "resolved": bool(indexes) and not claim_conflicts,
+                "conflicts": claim_conflicts,
+                "entity": claim.entity,
+            }
+        resolved = [
+            field_name for field_name in required
+            if any(
+                item["canonical_field"] == field_name and item["resolved"]
+                for item in claim_coverage.values()
+            )
+        ]
+    else:
+        for field_name in required:
+            indexes = _matching_evidence_indexes(
+                field_name, all_evidence, entity_terms
+            )
+            field_evidence[field_name] = indexes
+            if indexes:
+                resolved.append(field_name)
     missing = [field_name for field_name in required if field_name not in resolved]
     contradictions = _contradictions(combined, frame)
-    fact_sensitive = bool(set(required) & _SENSITIVE_FIELDS)
-    entity_supported = not entity_terms or any(
-        field_evidence.get(field_name)
-        for field_name in required
-        if field_name not in {"source", "privacy", "general"}
+    contradictions.extend(
+        str(value.get("message") or value.get("fact_key") or "تعارض قيم")
+        for value in evidence_conflicts
     )
+    fact_sensitive = bool(set(required) & _SENSITIVE_FIELDS)
+    if claim_coverage:
+        entity_supported = all(
+            value["resolved"]
+            for value in claim_coverage.values()
+            if value["canonical_field"] not in {"source", "privacy", "general"}
+        )
+    else:
+        entity_supported = not entity_terms or any(
+            field_evidence.get(field_name)
+            for field_name in required
+            if field_name not in {"source", "privacy", "general"}
+        )
     if set(required) <= {"source", "privacy", "general"}:
         entity_supported = True
     sufficient = (
@@ -243,6 +449,10 @@ def build_evidence_contract(
         and not contradictions
         and bool(combined.strip())
         and entity_supported
+        and not plan.unresolved_clauses
+        and all(
+            value["resolved"] for value in claim_coverage.values()
+        )
     )
     return EvidenceContract(
         required_fields=required,
@@ -255,6 +465,8 @@ def build_evidence_contract(
         entity_terms=entity_terms,
         entity_supported=entity_supported,
         field_evidence=field_evidence,
+        claim_coverage=claim_coverage,
+        unresolved_clauses=list(plan.unresolved_clauses),
     )
 
 
@@ -270,6 +482,9 @@ _FIELD_EXPANSIONS = {
     "programs": "البرامج التخصصات المسارات",
     "source": "المصدر المرجع تاريخ التحقق",
     "admissions": "معدل القبول مفتاح القبول الفروع",
+    "admission_cutoff": "مفتاح القبول الحد الأدنى لمعدل الثانوية النسبة والفرع",
+    "branch": "فرع الثانوية المسموح للبرنامج",
+    "account_access": "استعادة الحساب كلمة المرور جهة الدعم الرسمية",
     "scholarships": "المنح الإعفاء شروط المنحة",
     "procedures": "الخطوات الإجراء الطلب",
     "deadlines": "آخر موعد تاريخ البداية النهاية",

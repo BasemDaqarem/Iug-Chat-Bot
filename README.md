@@ -181,10 +181,12 @@ docs/                    ← improvement and test reports
   for its authenticated owner.
 - Test accounts on the live DB: create them, then **delete them** (auth + session).
 
-## Adaptive RAG v2 — every question reaches the LLM
+## bounded-agentic-rag-v4 — every question reaches the LLM
 
-This version uses a unified prompt builder, deterministic `ConversationFrame` / `QueryPlan`, structured evidence routing, contextual parent-child chunks, score-preserving Dense+BM25+RRF candidates, an evidence contract, and a selective reranker with a circuit breaker.
+This version plans one claim per request clause, resolves shorthand concepts such as the Arabic “key” from safe conversation context, and retrieves reserved evidence per claim through structured lookup, Dense+BM25+RRF, selective reranking, and parent expansion. The evidence contract deduplicates facts and resolves conflicts to the newest source only when dates are comparable; otherwise an explicit administrative decision is required.
+
+A semantic planner is conditional on ambiguity/compound requests, and a semantic verifier is conditional on sensitive answer shapes. Retrieval has one bounded retry and generation has one bounded repair, with no open loops. Live questions are reported as the latest dated information rather than asserted as current state.
 
 No trusted-fact, admission, privacy, or final-answer-cache shortcut returns the user-facing answer directly. Deterministic services and retrieval prepare authorized evidence only; every user question reaches the LLM for final wording. Embedding caching remains enabled, while final-answer caching defaults to off (`LLM_ALWAYS_ANSWER=true`, `ANSWER_CACHE_ENABLED=false`).
 
-Current deterministic test result: **411 passed**.
+Run `python -m pytest -q` to verify the complete regression suite before deployment.

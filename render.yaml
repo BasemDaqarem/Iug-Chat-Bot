@@ -50,6 +50,14 @@ services:
       - key: CACHE_ENABLED
         value: "true"
 
+      # bounded-agentic-rag-v4: planner/verifier داخل نموذج المحادثة،
+      # وJina reranker انتقائي مع fail-open وقاطع دائرة.
+      - key: SEMANTIC_RAG_ENABLED
+        value: "true"
+
+      - key: RERANK_ENABLED
+        value: "true"
+
       # ── سياسات مرحلة التجربة (بدّلها عند الإطلاق الحقيقي) ──────────
       # true = الطالب يسجّل نفسه ببيانات تجريبية (وضع العرض الحالي).
       # عند الربط بنظام القبول الحقيقي: اجعلها false.

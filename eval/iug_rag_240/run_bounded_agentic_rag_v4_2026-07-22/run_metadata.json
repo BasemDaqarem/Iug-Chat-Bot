@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-07-22T14:35:25.028606+00:00",
+  "execution": "local_python_pipeline",
+  "judging": "manual_by_codex_only",
+  "questions_file": "D:\\gg\\Iug-Chat-Bot-Merged\\eval\\iug_rag_240\\أسئلة_IUG_RAG_240_فقط.md",
+  "context_fixtures_file": "D:\\gg\\Iug-Chat-Bot-Merged\\eval\\iug_rag_240\\context_fixtures.json",
+  "readiness": {
+    "status": "ready",
+    "index_ready": true,
+    "document_count": 1,
+    "chunk_count": 1,
+    "uploaded_chunk_count": 717,
+    "index_version": "685d0336e814ce0de8c133aaaaaf73cf7d78513ce3680a5fb507d132d5e184a7",
+    "failed_sources": [],
+    "failed_refresh_sources": [],
+    "initialization_error": null,
+    "initialization_started_at": 1784730895.4848778,
+    "ready_at": 1784730924.8313594
+  },
+  "public_collection_count": 36
+}

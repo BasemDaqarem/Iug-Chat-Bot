@@ -1,0 +1,157 @@
+{
+  "M067": {
+    "setup_turns": [
+      {"user": "كم سعر ساعة الطب البشري؟", "assistant_mode": "literal", "assistant": "سعر ساعة الطب البشري 100 دينار."}
+    ]
+  },
+  "M068": {
+    "setup_turns": [
+      {"user": "كم سعر ساعة علم الحاسوب؟", "assistant_mode": "literal", "assistant": "سعر ساعة علم الحاسوب 25 دينار."}
+    ]
+  },
+  "M069": {
+    "setup_turns": [
+      {"user": "ما تفاصيل منحة الامتياز الأولى؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M070": {
+    "setup_turns": [
+      {"user": "شو رقم الجلوس المطلوب وأنا شهادتي من السعودية؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M071": {
+    "setup_turns": [
+      {"user": "كم تخصص رئيسي في كلية الهندسة؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M072": {
+    "setup_turns": [
+      {"user": "ما تخصصات كلية العلوم ورسومها؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M073": {
+    "setup_turns": [
+      {"user": "من عميد كلية الهندسة؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M074": {
+    "setup_turns": [
+      {"user": "ما بريد القبول والتسجيل؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M075": {
+    "setup_turns": [
+      {"user": "معدلي 79 علمي؛ هل أحقق مفتاح الهندسة؟", "assistant_mode": "literal", "assistant": "لا؛ معدل 79% أقل من مفتاح الهندسة 80%."}
+    ]
+  },
+  "M076": {
+    "setup_turns": [
+      {"user": "فرعي أدبي ومعدلي 82؛ هل الهندسة ممكنة؟", "assistant_mode": "literal", "assistant": "لا؛ برامج الهندسة تتطلب الفرع العلمي."}
+    ]
+  },
+  "M077": {
+    "setup_turns": [
+      {"user": "كم سعر ساعة هندسة الحاسوب وما مفتاح القبول؟", "assistant_mode": "literal", "assistant": "سعر ساعة هندسة الحاسوب 28 دينار ومفتاحها 80% علمي."}
+    ]
+  },
+  "M078": {
+    "setup_turns": [
+      {"user": "ما تفاصيل منحة الامتياز؟", "assistant_mode": "generate"}
+    ]
+  },
+  "M079": {"setup_turns": [], "intentional_empty_context": true},
+  "M080": {"setup_turns": [], "intentional_empty_context": true},
+  "M081": {
+    "setup_turns": [
+      {"user": "كم رسوم هندسة الحاسوب؟", "assistant_mode": "generate"}
+    ]
+  },
+  "H013": {
+    "setup_turns": [
+      {"user": "ما التخصصات المتاحة لفرع العلمي؟", "assistant_mode": "generate"},
+      {"user": "تصحيح: فرعي أدبي.", "assistant_mode": "generate"},
+      {"user": "لا أريد التمريض.", "assistant_mode": "generate"}
+    ],
+    "final_question": "رتب الخيارات المتبقية حسب الكلية."
+  },
+  "H014": {
+    "setup_turns": [
+      {"user": "ما شروط القبول في الطب؟", "assistant_mode": "generate"},
+      {"user": "ما سعر ساعة الطب؟", "assistant_mode": "generate"},
+      {"user": "هل قبولي بالطب مضمون؟", "assistant_mode": "generate"}
+    ],
+    "final_question": "ما شروط منحة حفظة القرآن؟"
+  },
+  "H015": {
+    "setup_turns": [
+      {"user": "معدلي 90 علمي، هل أحقق شرط الطب؟", "assistant_mode": "generate"},
+      {"user": "تصحيح: معدلي 92 علمي.", "assistant_mode": "generate"}
+    ],
+    "final_question": "هل أحقق شرط الطب؟"
+  },
+  "H016": {
+    "setup_turns": [
+      {"user": "كم عدد كليات جامعة غزة؟", "assistant_mode": "generate"},
+      {"user": "لا، أقصد الجامعة الإسلامية بغزة.", "assistant_mode": "generate"}
+    ],
+    "final_question": "كم عدد كليات الجامعة؟"
+  },
+  "H017": {
+    "setup_turns": [
+      {"user": "كم سعر ساعة الطب؟", "assistant_mode": "literal", "assistant": "سعر ساعة الطب 100 دينار."}
+    ],
+    "final_question": "من أي ملف أخذت الرقم، وهل هو سعر عام لكل الكليات؟"
+  },
+  "H018": {
+    "setup_turns": [
+      {"user": "ما المنح المتاحة؟", "assistant_mode": "generate"}
+    ],
+    "final_question": "اذكر برامج كلية أصول الدين فقط، ولا تذكر أي منحة."
+  },
+  "H019": {
+    "setup_turns": [
+      {"user": "ما رابط خطة هندسة الحاسوب؟", "assistant_mode": "literal", "assistant": "لا أملك رابطاً موثوقاً لخطة هندسة الحاسوب؛ راجع القنوات الرسمية للتأكد.", "status": "insufficient_evidence"}
+    ],
+    "final_question": "ما رابط خطة هندسة الحاسوب؟"
+  },
+  "H020": {
+    "setup_turns": [],
+    "intentional_empty_context": true,
+    "final_question": "اذكرهم."
+  },
+  "H021": {
+    "setup_turns": [
+      {"user": "كم سعر ساعة هندسة الحاسوب؟", "assistant_mode": "literal", "assistant": "سعر ساعة هندسة الحاسوب 35 ديناراً."}
+    ],
+    "final_question": "كم سعر ساعة هندسة الحاسوب؟"
+  },
+  "H022": {
+    "setup_turns": [
+      {"user": "صديقي قال إن الرسوم بالدولار.", "assistant_mode": "generate"}
+    ],
+    "final_question": "كم رسوم هندسة الحاسوب؟"
+  },
+  "H023": {
+    "setup_turns": [
+      {"user": "هل أحتاج تأشيرة للدراسة؟", "assistant_mode": "generate"}
+    ],
+    "final_question": "كم سعر ساعة علم الحاسوب؟"
+  },
+  "H024": {
+    "setup_turns": [
+      {"user": "أريد بكالوريوس فقط، فرعي أدبي، ولا أريد التمريض.", "assistant_mode": "generate"}
+    ],
+    "final_question": "ما الخيارات المسندة من كلية التربية؟"
+  },
+  "H047": {
+    "setup_turns": [
+      {"user": "كم عدد كليات الجامعة؟", "assistant_mode": "literal", "assistant": "عدد كليات الجامعة 11 كلية."}
+    ],
+    "final_question": "اذكرهم."
+  },
+  "H048": {
+    "setup_turns": [],
+    "intentional_empty_context": true,
+    "final_question": "اذكرهم."
+  }
+}
