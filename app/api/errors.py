@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import config
-from app.errors import ChatbotError, ConfigurationError
+from app.errors import ChatbotError, ConfigurationError, ServiceNotReadyError
 from app.log import get_logger
 from app.tokens import InvalidTokenError
 
@@ -139,7 +139,9 @@ def setup_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ChatbotError)
     async def _domain_error(request: Request, exc: ChatbotError):
         # Service-layer failure: config → 503, everything else (upstream) → 502.
-        status = 503 if isinstance(exc, ConfigurationError) else 502
+        status = 503 if isinstance(
+            exc, (ConfigurationError, ServiceNotReadyError)
+        ) else 502
         log.warning("%s at %s: %s", exc.code, request.url.path, exc.message)
         return _render(status, exc.code, exc.message, exc.details, request)
 

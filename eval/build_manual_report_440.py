@@ -19,7 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as handle:
-        return [json.loads(line) for line in handle if line.strip()]
+        # The benchmark is resumable: a transient failed attempt is retained
+        # and a later successful retry is appended for the same QID.  Review
+        # the final state of every question, not the obsolete attempt.
+        latest_by_qid: dict[str, dict[str, Any]] = {}
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            latest_by_qid[record["qid"]] = record
+    return [latest_by_qid[qid] for qid in sorted(latest_by_qid)]
 
 
 def percentile(values: list[float], fraction: float) -> float | None:

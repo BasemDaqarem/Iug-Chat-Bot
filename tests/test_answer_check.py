@@ -32,6 +32,50 @@ class TestAnswerCheck(unittest.TestCase):
             excluded=[], asked_level=None)
         self.assertEqual(issues, [])
 
+    def test_fee_for_wrong_entity_is_rejected(self):
+        issues = answer_check.problems(
+            "رسوم ساعة الطب 22 ديناراً.",
+            sources=["رسوم ساعة التمريض 22 ديناراً، والطب 100 دينار."],
+            excluded=[], asked_level=None,
+            question="كم رسوم ساعة الطب؟", entity_terms=["الطب"])
+        self.assertTrue(any("مبلغاً" in issue for issue in issues))
+
+    def test_supported_entity_bound_fee_passes(self):
+        issues = answer_check.problems(
+            "رسوم ساعة الطب 100 دينار.",
+            sources=["رسوم ساعة التمريض 22 ديناراً، والطب 100 دينار."],
+            excluded=[], asked_level=None,
+            question="كم رسوم ساعة الطب؟", entity_terms=["الطب"])
+        self.assertEqual(issues, [])
+
+    def test_wrong_explicit_faculty_count_is_rejected(self):
+        issues = answer_check.problems(
+            "تضم الجامعة 9 كليات.",
+            sources=["تضم الجامعة 11 كلية أكاديمية."],
+            excluded=[], asked_level=None,
+            question="كم عدد كليات الجامعة؟")
+        self.assertTrue(any("العدد" in issue for issue in issues))
+
+    def test_false_missing_claim_is_rejected_when_contract_is_sufficient(self):
+        issues = answer_check.problems(
+            "لا توجد رسوم منشورة لهذا البرنامج.",
+            sources=["رسوم ساعة هندسة الحاسوب 28 ديناراً."],
+            excluded=[], asked_level=None,
+            question="كم رسوم هندسة الحاسوب؟",
+            entity_terms=["هندسه", "الحاسوب"],
+            evidence_sufficient=True)
+        self.assertTrue(any("غير موجودة" in issue for issue in issues))
+
+    def test_missing_claim_is_rejected_when_retrieval_is_degraded(self):
+        issues = answer_check.problems(
+            "المعلومة غير موجودة.",
+            sources=[], excluded=[], asked_level=None,
+            question="كم كلية؟",
+            evidence_sufficient=False,
+            retrieval_degraded=True,
+        )
+        self.assertTrue(any("استرجاع متدهورة" in issue for issue in issues))
+
     def test_violated_exclusion_detected(self):
         issues = answer_check.problems(
             "أنصحك بمنحة الامتياز فهي الأفضل.",

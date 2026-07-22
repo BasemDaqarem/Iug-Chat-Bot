@@ -52,11 +52,19 @@ _REFERENCE_WORDS = {
     "الرقم", "رقمه", "رقمها", "مكانه", "مكانها", "شروطه", "شروطها",
     "رسومه", "رسومها", "رابطه", "رابطها", "الطلبات", "الطلبات السابقة",
     "المذكور", "السابق", "هؤلاء", "هذه", "هذا",
+    "الخطة", "الموعد", "الرابط", "القائمة", "المبلغ", "الجهة",
 }
+
+CONTEXT_INDEPENDENT = "independent"
+CONTEXT_FOLLOWUP = "followup"
+CONTEXT_CORRECTION = "correction"
+CONTEXT_ASSISTANT_REFERENCE = "assistant_reference"
+CONTEXT_AMBIGUOUS = "ambiguous"
 
 
 @dataclass(slots=True)
 class ConversationFrame:
+    context_mode: str = CONTEXT_INDEPENDENT
     intent: str = "general"
     active_topic: str | None = None
     reference: str | None = None
@@ -77,6 +85,7 @@ class ConversationFrame:
     def prompt_block(self) -> str:
         rows = []
         labels = {
+            "context_mode": "نمط السياق",
             "intent": "النية",
             "active_topic": "الموضوع النشط",
             "reference": "المرجع",
@@ -105,6 +114,7 @@ class ConversationFrame:
 class QueryPlan:
     original_question: str
     standalone_query: str
+    context_mode: str
     intent: str
     domains: list[str]
     entities: dict[str, Any]
@@ -168,6 +178,34 @@ def _reference(question: str, history: list) -> str | None:
     return previous[-1] if previous else None
 
 
+def classify_context_mode(question: str, history: list) -> str:
+    """Classify how much conversational state this turn may consume.
+
+    Independent questions are deliberately isolated from all earlier turns.
+    Follow-ups and corrections may use fresh *user-authored* turns only.  A
+    referential question with no fresh anchor is ambiguous and should be
+    clarified by the LLM instead of inheriting stale state.
+    """
+    has_fresh_anchor = bool(
+        history
+        and is_fresh(history[-1])
+        and str(history[-1].get("user") or "").strip()
+    )
+    if query_rewrite.is_correction(question):
+        return CONTEXT_CORRECTION if has_fresh_anchor else CONTEXT_AMBIGUOUS
+    if query_rewrite.is_assistant_response_reference(question):
+        return (
+            CONTEXT_ASSISTANT_REFERENCE
+            if has_fresh_anchor else CONTEXT_AMBIGUOUS
+        )
+    if not query_rewrite.needs_history_context(question):
+        return CONTEXT_INDEPENDENT
+    if not has_fresh_anchor:
+        return CONTEXT_AMBIGUOUS
+    expanded = query_rewrite.with_history_context(question, history)
+    return CONTEXT_FOLLOWUP if expanded != question else CONTEXT_AMBIGUOUS
+
+
 def _rate_type(question: str, domains: list[str]) -> str | None:
     norm = normalize_arabic(question)
     if "تراكمي" in norm or "جامعي" in norm:
@@ -208,21 +246,35 @@ def _requested_fields(question: str, domains: list[str]) -> list[str]:
 
 
 def build_conversation_frame(question: str, history: list) -> ConversationFrame:
-    expanded = query_rewrite.with_history_context(question, history)
+    context_mode = classify_context_mode(question, history)
+    contextual_history = (
+        history
+        if context_mode in {
+            CONTEXT_FOLLOWUP, CONTEXT_CORRECTION, CONTEXT_ASSISTANT_REFERENCE
+        }
+        else []
+    )
+    expanded = query_rewrite.with_history_context(question, contextual_history)
     positive = query_rewrite.positive_query(expanded)
-    constraints = query_rewrite.latest_academic_constraints(question, history)
+    constraints = query_rewrite.latest_academic_constraints(
+        question, contextual_history
+    )
     domains = _domains(positive)
-    reference = _reference(question, history)
+    reference = _reference(question, contextual_history)
     has_reference = query_rewrite.has_reference_tokens(question)
-    followup = bool(history and expanded != question)
+    followup = context_mode in {
+        CONTEXT_FOLLOWUP, CONTEXT_CORRECTION, CONTEXT_ASSISTANT_REFERENCE
+    }
     ambiguous = bool(
-        (has_reference and reference is None)
+        context_mode == CONTEXT_AMBIGUOUS
+        or (has_reference and reference is None)
         or (_transfer_scope(expanded) == "unspecified")
     )
     intent = domains[0] if len(domains) == 1 else "compound"
     return ConversationFrame(
+        context_mode=context_mode,
         intent=intent,
-        active_topic=_active_topic(positive, history),
+        active_topic=_active_topic(positive, contextual_history),
         reference=reference,
         degree_level=constraints.get("degree"),
         branch=constraints.get("branch"),
@@ -245,7 +297,14 @@ def build_query_plan(
 ) -> tuple[ConversationFrame, QueryPlan]:
     seed = retrieval_question or question
     frame = build_conversation_frame(seed, history)
-    standalone = query_rewrite.with_history_context(seed, history)
+    contextual_history = (
+        history
+        if frame.context_mode in {
+            CONTEXT_FOLLOWUP, CONTEXT_CORRECTION, CONTEXT_ASSISTANT_REFERENCE
+        }
+        else []
+    )
+    standalone = query_rewrite.with_history_context(seed, contextual_history)
     standalone = query_rewrite.positive_query(standalone)
     standalone = query_rewrite.add_canonical_terms(standalone)
     constraints = []
@@ -264,7 +323,7 @@ def build_query_plan(
 
     inherited_list = frame.followup and any(
         query_rewrite.wants_complete_list(turn)
-        for turn in _fresh_user_turns(history)
+        for turn in _fresh_user_turns(contextual_history)
     )
     is_list = query_rewrite.wants_complete_list(question) or inherited_list
     is_compound = (
@@ -278,6 +337,7 @@ def build_query_plan(
     plan = QueryPlan(
         original_question=question,
         standalone_query=standalone,
+        context_mode=frame.context_mode,
         intent=frame.intent,
         domains=frame.domains,
         entities={
@@ -305,4 +365,10 @@ __all__ = [
     "QueryPlan",
     "build_conversation_frame",
     "build_query_plan",
+    "classify_context_mode",
+    "CONTEXT_INDEPENDENT",
+    "CONTEXT_FOLLOWUP",
+    "CONTEXT_CORRECTION",
+    "CONTEXT_ASSISTANT_REFERENCE",
+    "CONTEXT_AMBIGUOUS",
 ]

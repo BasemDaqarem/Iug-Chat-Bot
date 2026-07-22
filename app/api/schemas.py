@@ -137,6 +137,10 @@ class ChatResponse(BaseModel):
             "student_context_rag_llm | trusted_fact_llm | privacy_policy_llm"
         ),
     )
+    trace_id: Optional[str] = Field(
+        default=None,
+        description="معرّف آمن لمقارنة سجل الاسترجاع عند الإبلاغ عن جواب.",
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -244,11 +248,30 @@ class HistoryResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: str = Field(description='"ok" عندما تكون الخدمة جاهزة للإجابة.')
+    status: Literal["starting", "ready", "failed"] = Field(
+        description="حالة تهيئة فهارس RAG الفعلية."
+    )
+    index_ready: bool = Field(
+        description="لا تقبل مسارات المحادثة طلباً قبل أن تصبح true."
+    )
     environment: str = Field(description="development | testing | production")
     collections: int = Field(description="عدد collections قاعدة المعرفة المحمّلة.")
+    document_count: int = Field(description="عدد الوثائق الأساسية المحمّلة.")
     knowledge_chunks: int = Field(description="عدد مقاطع قاعدة المعرفة المفهرسة.")
     uploaded_files: int = Field(description="عدد الملفات المرفوعة المفهرسة.")
+    uploaded_chunks: int = Field(description="إجمالي مقاطع الملفات المرفوعة.")
+    index_version: str = Field(
+        description="بصمة المحتوى والنموذج ونسخة خط أنابيب RAG."
+    )
+    failed_sources: List[str] = Field(
+        default_factory=list,
+        description="بصمات مصادر فشلت تهيئتها؛ الأسماء الخام تبقى في سجل الخادم.",
+    )
+    failed_refresh_sources: List[str] = Field(
+        default_factory=list,
+        description="بصمات تحديثات فاشلة مع بقاء النسخة السابقة فعالة.",
+    )
+    initialization_error: Optional[str] = None
     model: str = Field(description="نموذج الـ LLM المستخدم للإجابات.")
     embed_model: str = Field(description="نموذج الـ embeddings المستخدم للبحث.")
 
@@ -268,7 +291,9 @@ class CacheStat(BaseModel):
 
 
 class CacheStatsResponse(BaseModel):
-    public_answers: CacheStat = Field(description="كاش الإجابات العامة (غير الخاصة بطالب).")
+    public_answers: CacheStat = Field(
+        description="حقل توافق قديم؛ يبقى صفر لأن الإجابات النهائية لا تُكاش."
+    )
     query_embeddings: CacheStat = Field(description="كاش متجهات الأسئلة (embeddings).")
 
 

@@ -464,8 +464,30 @@ def file_degree_level(file_name: str) -> str | None:
 
 # «مش منح»، «بدون رسوم»، «لا تحكيلي عن تأجيل» — السائل استبعد موضوعاً صراحةً
 # لكن البحث الدلالي كان يلتقطه لأنه الأبرز لفظياً (ثبت في Q097 وQ340).
+# Topic exclusions are deliberately lexicon-bound.  Generic negation such as
+# «بلا مصدر»، «بدون ما تضمن»، or «مش رقم محفوظ» describes HOW the user wants
+# the answer; it must not silently ban the following word from retrieval or
+# from the final answer.  Only explicit discourse exclusions of known topics
+# are removed from the retrieval query.
+_EXCLUSION_TOPICS = (
+    "الصفحة الرئيسية",
+    "الهندسة",
+    "المنح",
+    "ماجستير",
+    "دكتوراه",
+    "تأجيل",
+    "رسوم",
+    "منح",
+)
+_EXCLUSION_TOPIC_PATTERN = "|".join(
+    re.escape(normalize_arabic(topic))
+    for topic in sorted(_EXCLUSION_TOPICS, key=len, reverse=True)
+)
 _EXCLUSION_RE = re.compile(
-    r"(?:\bمش\b|\bبدون\b|\bبلا\b|ما بدي|لا تحكيلي عن|لا تعطيني|خلينا من|ليس عن)\s+(\S+)"
+    rf"(?:\bمش\s+عن\b|\bمو\s+عن\b|\bليس\s+عن\b|"
+    rf"\bمش\b|\bمو\b|\bما\s+بدي\b|لا\s+تحكيلي\s+عن|"
+    rf"لا\s+تعطيني|خلينا\s+من)\s+({_EXCLUSION_TOPIC_PATTERN})"
+    rf"(?=$|[\s،,؛;.!؟:()])"
 )
 # مواضيع معروفة → آثارها في أسماء الملفات (بعضها بالإنجليزية)
 _EXCLUSION_TOPIC_FILES = {
@@ -480,10 +502,15 @@ _EXCLUSION_TOPIC_FILES = {
 
 
 def extract_exclusions(question: str) -> list[str]:
-    """المواضيع التي استبعدها السائل نصاً — مطبَّعة ومنظفة من الترقيم الملتصق."""
+    """Return only explicit, known topic exclusions.
+
+    This intentionally does not interpret «بدون/بلا + word» as a topic ban;
+    those forms commonly express an answer constraint rather than a subject
+    switch (for example «لا تذكر مبلغاً بلا مصدر»).
+    """
     norm = normalize_arabic(question)
     tokens = [m.group(1).strip("؛،,.!؟:()\"'») ") for m in _EXCLUSION_RE.finditer(norm)]
-    return [t for t in tokens if t]
+    return list(dict.fromkeys(t for t in tokens if t))
 
 
 def exclusion_file_markers(excluded: list[str]) -> set[str]:
@@ -531,6 +558,9 @@ _ANAPHORA_TOKENS = {
     "شروطه", "شروطها", "رسومه", "رسومها", "رابطه", "رابطها",
     "الطلبات", "هؤلاء",
 }
+_COMMON_REFERENCE_TOKENS = {
+    "الخطه", "الموعد", "الرابط", "القائمه", "المبلغ", "الجهه",
+}
 # A follow-up is usually VERY short («كم هيكلفني؟», «وللماجستير؟»); at 4+
 # tokens questions usually carry their own topic and prepending the previous
 # turn only pollutes retrieval (proven live: «كيف بدي اجل الفصل» + a nursing
@@ -542,7 +572,14 @@ def has_reference_tokens(question: str) -> bool:
     """هل في السؤال إشارة عائدة («اذكرهم»، «هذا»...)؟ إجابة سؤال كهذا تعتمد
     على سياق محادثة صاحبه، فلا يجوز تخزينها في كاش مشترك يقدّمها لغيره
     (ثبت عملياً: أول زائر يسأل «اذكرهم» كان جوابه العشوائي يُكاش للجميع)."""
-    return bool(set(tokenize(question)) & _ANAPHORA_TOKENS)
+    tokens = tokenize(question)
+    token_set = set(tokens)
+    if token_set & _ANAPHORA_TOKENS:
+        return True
+    # Common nouns are referential only in short/elliptical questions.  A
+    # self-contained query such as «أريد الخطة الدراسية لهندسة الحاسوب» must
+    # not inherit an unrelated previous topic merely because it says الخطة.
+    return len(tokens) <= 4 and bool(token_set & _COMMON_REFERENCE_TOKENS)
 
 
 def is_pure_reference(question: str) -> bool:
@@ -565,14 +602,33 @@ _CONTINUATION_STARTS = {
     "وكم", "وشو", "وايش", "وماذا", "وهل", "ومين", "ومن", "ومتى", "ووين",
     "وأين", "واين", "وكيف", "وليش", "ولماذا", "وانا", "وأنا",
 }
+_CONTINUATION_PREFIXES = ("ولل", "وبالنسبه")
+_ELLIPTICAL_COST_MARKS = ("هيكلف", "يكلفني", "تكلفني", "بكلف", "بتكلف")
 
 # تصحيحات طويلة تحمل موضوعاً جزئياً لكنها تعتمد على الدور السابق لتحديد
 # القيمة الناقصة («أنا بسأل عن تخصصات، مش منح» يحتاج المعدل والفرع السابقين).
 # لا نجعل كل جملة فيها «مش» متابعة كي لا نلوث الأسئلة المستقلة المنفية.
 _CORRECTION_STARTS = (
     "انا بسال عن", "انا بحكي عن", "سوالي عن", "سؤالي عن",
-    "مش قصدي", "مو قصدي", "ليس قصدي",
+    "مش قصدي", "مو قصدي", "ليس قصدي", "لا اقصد", "بل اقصد",
+    "تصحيح", "قصدي",
 )
+
+
+def is_correction(question: str) -> bool:
+    """Whether the current turn explicitly repairs the previous user turn."""
+    norm = normalize_arabic(question)
+    return any(norm.startswith(normalize_arabic(mark)) for mark in _CORRECTION_STARTS)
+
+
+def is_assistant_response_reference(question: str) -> bool:
+    """True only when the user explicitly points at the assistant's last text."""
+    norm = normalize_arabic(question)
+    answer_marks = (
+        "اجابتك", "جوابك", "ردك", "النقطه السابقه", "النقطة السابقة",
+        "ما قصدك", "ماذا تقصد", "اشرح كلامك", "وضح كلامك",
+    )
+    return any(normalize_arabic(mark) in norm for mark in answer_marks)
 
 
 def is_source_metadata_followup(question: str) -> bool:
@@ -592,18 +648,28 @@ def needs_history_context(question: str) -> bool:
     if not tokens:
         return False
     norm = normalize_arabic(question)
-    if tokens[0] in _CONTINUATION_STARTS:
+    if tokens[0] in _CONTINUATION_STARTS or any(
+        tokens[0].startswith(prefix) for prefix in _CONTINUATION_PREFIXES
+    ):
         return True
-    if set(tokens) & _ANAPHORA_TOKENS:
+    if has_reference_tokens(question):
         return True
-    if any(norm.startswith(normalize_arabic(mark)) for mark in _CORRECTION_STARTS):
+    if is_correction(question):
+        return True
+    if is_assistant_response_reference(question):
         return True
     # «اذكر اسم المصدر وتاريخه» سؤال metadata تابع بطبيعته: المصدر لأي
     # معلومة لا يُعرف إلا من الدور السابق. اقتران المصدر بالتاريخ/الاسم
     # يمنع جرّ سؤال مستقل مثل «ما مصدر الطاقة؟» إلى سياق قديم.
     if is_source_metadata_followup(question):
         return True
-    return len(tokens) <= _SHORT_QUESTION_TOKENS
+    if len(tokens) <= _SHORT_QUESTION_TOKENS and any(
+        mark in norm for mark in _ELLIPTICAL_COST_MARKS
+    ):
+        return True
+    # Shortness alone is not proof of a follow-up.  «من رئيس الجامعة؟» is a
+    # complete independent question even though it is only three tokens.
+    return False
 
 
 def with_history_context(question: str, history: list) -> str:

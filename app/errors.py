@@ -32,3 +32,13 @@ class ConfigurationError(ChatbotError):
     HTTP 503 Service Unavailable — the service simply cannot run as set up."""
 
     code = "CONFIGURATION_ERROR"
+
+
+class ServiceNotReadyError(ChatbotError):
+    """The local knowledge indexes are still building or failed validation.
+
+    This is deliberately distinct from an empty retrieval result: callers may
+    retry it, and the LLM must never turn it into a factual "not found" claim.
+    """
+
+    code = "SERVICE_NOT_READY"

@@ -32,6 +32,19 @@
   };
 
   const role = auth.role || "student";
+  const MAX_QUESTIONS = 10;
+  const questionCountKey = `iug_question_count:${role}:${auth.user_id || auth.student_id || "guest"}`;
+  let completedQuestions = 0;
+  let limitResetInProgress = false;
+  let showNewConversationNotice = false;
+  try {
+    const storedCount = Number.parseInt(sessionStorage.getItem(questionCountKey) || "0", 10);
+    completedQuestions = Number.isFinite(storedCount)
+      ? Math.max(0, Math.min(MAX_QUESTIONS, storedCount))
+      : 0;
+    showNewConversationNotice = sessionStorage.getItem("iug_new_chat_notice") === "1";
+    sessionStorage.removeItem("iug_new_chat_notice");
+  } catch (_) {}
   const roleNames = { guest: "زائر", student: "طالب", employee: "موظف", admin: "أدمن" };
   const firstName = (auth.name || "").split(" ")[0] || roleNames[role];
   el.whoami.textContent = `${auth.name || roleNames[role]}${role === "guest" ? "" : ` · ${auth.user_id || auth.student_id}`}`;
@@ -144,11 +157,57 @@
 
   function scrollToEnd() { el.scroll.scrollTo({ top: el.scroll.scrollHeight, behavior: "smooth" }); }
 
+  if (showNewConversationNotice) {
+    bubble("بدأت محادثة جديدة بسجل فارغ. يمكنك طرح سؤالك الآن.", "bot");
+  }
+
   // ---------- send ----------
   let busy = false;
 
+  async function resetConversationAfterLimit() {
+    if (limitResetInProgress) return;
+    limitResetInProgress = true;
+    el.input.disabled = true;
+    el.send.disabled = true;
+    bubble(
+      "وصلت إلى 10 أسئلة. سأمسح سجل هذه المحادثة وأبدأ محادثة جديدة.",
+      "bot"
+    );
+    try {
+      if (role === "guest") {
+        guestHistory.length = 0;
+      } else {
+        const res = await fetch("/api/sessions/me/history", {
+          method: "DELETE",
+          headers: { Authorization: "Bearer " + auth.token },
+        });
+        if (res.status === 401) {
+          endSession("انتهت صلاحية جلستك، سجّل الدخول من جديد.");
+          return;
+        }
+        if (!res.ok) throw new Error("history clear failed");
+      }
+      completedQuestions = 0;
+      try { sessionStorage.setItem(questionCountKey, "0"); } catch (_) {}
+      try { sessionStorage.setItem("iug_new_chat_notice", "1"); } catch (_) {}
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (_) {
+      limitResetInProgress = false;
+      el.send.disabled = false;
+      bubble(
+        "⚠️ تعذّر مسح سجل المحادثة، لذلك لم أُحدّث الصفحة. اضغط إرسال لإعادة محاولة المسح.",
+        "bot"
+      );
+    }
+  }
+
   async function ask(question) {
-    if (busy || !question.trim()) return;
+    if (busy) return;
+    if (completedQuestions >= MAX_QUESTIONS) {
+      await resetConversationAfterLimit();
+      return;
+    }
+    if (!question.trim()) return;
     busy = true;
     el.send.disabled = true;
     if (el.chips) el.chips.remove();
@@ -160,18 +219,31 @@
     try {
       // Signed-in students get the token-by-token stream; guests use the
       // plain endpoint (no token to stream under).
+      let completed = false;
       if (auth.token && role !== "guest") {
-        await streamAsk(question, dots);
+        completed = await streamAsk(question, dots);
       } else {
-        await plainAsk(question, dots);
+        completed = await plainAsk(question, dots);
+      }
+      if (completed) {
+        completedQuestions += 1;
+        try {
+          sessionStorage.setItem(questionCountKey, String(completedQuestions));
+        } catch (_) {}
+        if (completedQuestions >= MAX_QUESTIONS) {
+          await resetConversationAfterLimit();
+        }
       }
     } catch (_) {
       dots.remove();
       bubble("⚠️ تعذّر الاتصال بالخادم — تحقّق من الإنترنت وحاول مجدداً.", "bot");
     } finally {
       busy = false;
-      el.send.disabled = false;
-      el.input.focus();
+      if (!limitResetInProgress && completedQuestions < MAX_QUESTIONS) {
+        el.input.disabled = false;
+        el.send.disabled = false;
+        el.input.focus();
+      }
     }
   }
 
@@ -185,14 +257,14 @@
     if (res.status === 401) {            // token missing/expired → re-login
       dots.remove();
       endSession("انتهت صلاحية جلستك، سجّل الدخول من جديد.");
-      return;
+      return false;
     }
     if (!res.ok || !res.body) {          // pre-stream error (e.g. 429) = JSON
       dots.remove();
       let data = null; try { data = await res.json(); } catch (_) {}
       bubble("⚠️ " + ((data && data.error && data.error.message) ||
                       "تعذّر الحصول على إجابة. حاول مجدداً."), "bot");
-      return;
+      return false;
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -205,7 +277,12 @@
       botBubble.innerHTML = renderMarkdown(full);
       scrollToEnd();
     }
-    if (!botBubble) { dots.remove(); bubble("لم أستطع إيجاد إجابة.", "bot"); }
+    if (!botBubble) {
+      dots.remove();
+      bubble("لم أستطع إيجاد إجابة.", "bot");
+      return false;
+    }
+    return Boolean(full.trim()) && !full.trim().startsWith("⚠️");
   }
 
   // Non-stream fallback for guests.
@@ -225,9 +302,11 @@
       bubble(answer, "bot");
       guestHistory.push({ user: question, assistant: answer });
       if (guestHistory.length > 5) guestHistory.shift();
+      return true;
     } else {
       bubble("⚠️ " + ((data && data.error && data.error.message) ||
                       "تعذّر الحصول على إجابة. حاول مجدداً."), "bot");
+      return false;
     }
   }
 
@@ -235,6 +314,9 @@
   document.querySelectorAll(".chip").forEach((c) =>
     c.addEventListener("click", () => ask(c.textContent))
   );
+  if (completedQuestions >= MAX_QUESTIONS) {
+    window.setTimeout(() => resetConversationAfterLimit(), 0);
+  }
 
   // ---------- logout ----------
   el.logout.addEventListener("click", () => {
