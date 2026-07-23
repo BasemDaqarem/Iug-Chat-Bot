@@ -130,7 +130,7 @@
     wrap.className = `msg msg--${who}`;
     if (who === "bot") {
       const ava = document.createElement("span");
-      ava.className = "msg__ava"; ava.textContent = "✦"; ava.setAttribute("aria-hidden", "true");
+      ava.className = "msg__ava"; ava.textContent = "ج"; ava.setAttribute("aria-hidden", "true");
       wrap.appendChild(ava);
     }
     const b = document.createElement("div");
@@ -148,7 +148,7 @@
     const wrap = document.createElement("div");
     wrap.className = "msg msg--bot";
     wrap.innerHTML =
-      '<span class="msg__ava" aria-hidden="true">✦</span>' +
+      '<span class="msg__ava" aria-hidden="true">ج</span>' +
       '<div class="msg__bubble msg__typing"><span></span><span></span><span></span></div>';
     el.scroll.appendChild(wrap);
     scrollToEnd();

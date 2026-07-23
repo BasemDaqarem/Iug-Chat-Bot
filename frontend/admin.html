@@ -3,72 +3,402 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#10233d" />
+  <meta name="theme-color" content="#0076df" />
+  <meta name="description" content="لوحة إدارة المساعد الجامعي للجامعة الإسلامية بغزة" />
   <title>لوحة الإدارة — المساعد الجامعي</title>
-  <link rel="stylesheet" href="styles.css?v=4" />
-  <link rel="stylesheet" href="portal.css?v=1" />
+  <link rel="icon" type="image/png" href="assets/iug-logo.png" />
+  <link rel="stylesheet" href="styles.css?v=10" />
+  <link rel="stylesheet" href="portal.css?v=10" />
 </head>
 <body class="portal-body">
+  <a class="skip-link" href="#main-content">تخطي إلى المحتوى الرئيسي</a>
+
   <div class="portal-shell">
-    <aside class="side" id="side">
-      <div class="side__brand"><span>✦</span><div><strong>IUG Assistant</strong><small>مركز الإدارة</small></div></div>
+    <aside class="side" id="side" aria-label="قائمة مركز الإدارة">
+      <div class="side__brand">
+        <span class="side__brand-logo">
+          <img src="assets/iug-logo.png" alt="شعار الجامعة الإسلامية بغزة" width="233" height="233" />
+        </span>
+        <div>
+          <strong>المساعد الجامعي</strong>
+          <small>مركز الإدارة</small>
+        </div>
+      </div>
+
       <nav class="side__nav" aria-label="التنقل الرئيسي">
-        <button class="nav-item is-active" data-view="overview"><span>⌂</span>الرئيسية</button>
-        <button class="nav-item" data-view="files"><span>▤</span>إدارة الملفات</button>
-        <button class="nav-item" data-view="employees"><span>♙</span>حسابات الموظفين</button>
-        <button class="nav-item" data-view="audit"><span>◷</span>سجل التدقيق</button>
+        <button class="nav-item is-active" type="button" data-view="overview" aria-current="page">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></svg>
+          </span>
+          الرئيسية
+        </button>
+        <button class="nav-item" type="button" data-view="files">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/></svg>
+          </span>
+          إدارة الملفات
+        </button>
+        <button class="nav-item" type="button" data-view="employees">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.5-4 2.6-6 5.5-6s5 2 5.5 6"/><circle cx="17.5" cy="9" r="2.2"/><path d="M15.5 14c3.4-.5 5.2 1.2 5.5 4"/></svg>
+          </span>
+          حسابات الموظفين
+        </button>
+        <button class="nav-item" type="button" data-view="audit">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2M8 3.5 6 2M16 3.5 18 2"/></svg>
+          </span>
+          سجل التدقيق
+        </button>
       </nav>
+
       <div class="side__foot">
         <a href="chat.html">الانتقال إلى شات الأدمن</a>
-        <button id="logout">تسجيل الخروج</button>
+        <button id="logout" type="button">تسجيل الخروج</button>
       </div>
     </aside>
 
-    <main class="workspace">
+    <button
+      class="side-backdrop"
+      id="sideBackdrop"
+      type="button"
+      aria-label="إغلاق قائمة التنقل"
+      tabindex="-1"
+    ></button>
+
+    <main class="workspace" id="main-content" tabindex="-1">
       <header class="topbar">
-        <button class="icon-btn mobile-only" id="menu" aria-label="فتح القائمة">☰</button>
-        <div><p class="eyebrow">الجامعة الإسلامية بغزة</p><h1 id="viewTitle">نظرة عامة</h1></div>
-        <div class="operator"><span class="operator__avatar">م</span><div><strong id="operatorName">الأدمن</strong><small id="operatorId">…</small></div></div>
+        <button
+          class="icon-btn mobile-only"
+          id="menu"
+          type="button"
+          aria-label="فتح قائمة التنقل"
+          aria-controls="side"
+          aria-expanded="false"
+        >☰</button>
+        <div>
+          <p class="eyebrow">الجامعة الإسلامية بغزة</p>
+          <h1 id="viewTitle">نظرة عامة</h1>
+        </div>
+        <div class="operator" aria-label="الحساب الحالي">
+          <span class="operator__avatar" aria-hidden="true">م</span>
+          <div>
+            <strong id="operatorName">الأدمن</strong>
+            <small id="operatorId">…</small>
+          </div>
+        </div>
       </header>
 
-      <section class="view is-active" data-panel="overview">
+      <section class="view is-active" data-panel="overview" aria-labelledby="overviewTitle">
         <div class="hero-panel">
-          <div><p class="eyebrow">منظومة معرفة آمنة</p><h2>أدر المحتوى والصلاحيات من مكان واحد</h2><p>لا تصل الملفات إلى البحث أو النموذج قبل نجاح المعالجة والنشر وتحديد الأدوار المسموح لها.</p></div>
-          <button class="primary" data-open="fileModal">+ رفع مسودة جديدة</button>
+          <div>
+            <p class="eyebrow">منظومة معرفة آمنة</p>
+            <h2 id="overviewTitle">أدر المحتوى والصلاحيات من مكان واحد</h2>
+            <p>لا تصل الملفات إلى البحث أو النموذج قبل نجاح المعالجة والنشر وتحديد الأدوار المسموح لها.</p>
+          </div>
+          <button class="primary" type="button" data-open="fileModal">+ رفع مسودة جديدة</button>
         </div>
-        <div class="stats">
-          <article class="stat"><span>الملفات</span><strong id="statFiles">—</strong><small>كل الإصدارات المُدارة</small></article>
-          <article class="stat"><span>المنشور</span><strong id="statPublished">—</strong><small>متاح حسب الصلاحية</small></article>
-          <article class="stat"><span>الموظفون</span><strong id="statEmployees">—</strong><small>حسابات العمل</small></article>
-          <article class="stat"><span>أحداث التدقيق</span><strong id="statAudit">—</strong><small>آخر العمليات الحساسة</small></article>
+
+        <div class="stats" aria-label="إحصاءات الإدارة">
+          <article class="stat">
+            <span>الملفات</span>
+            <strong id="statFiles">—</strong>
+            <small>كل الإصدارات المُدارة</small>
+          </article>
+          <article class="stat">
+            <span>المنشور</span>
+            <strong id="statPublished">—</strong>
+            <small>متاح حسب الصلاحية</small>
+          </article>
+          <article class="stat">
+            <span>الموظفون</span>
+            <strong id="statEmployees">—</strong>
+            <small>حسابات العمل</small>
+          </article>
+          <article class="stat">
+            <span>أحداث التدقيق</span>
+            <strong id="statAudit">—</strong>
+            <small>آخر العمليات الحساسة</small>
+          </article>
         </div>
-        <div class="panel"><div class="panel__head"><div><p class="eyebrow">آخر تحديثات المحتوى</p><h3>الملفات الحديثة</h3></div><button class="text-btn" data-goto="files">عرض الكل</button></div><div id="recentFiles" class="activity"></div></div>
+
+        <section class="panel" aria-labelledby="recentFilesTitle">
+          <div class="panel__head">
+            <div>
+              <p class="eyebrow">آخر تحديثات المحتوى</p>
+              <h3 id="recentFilesTitle">الملفات الحديثة</h3>
+            </div>
+            <button class="text-btn" type="button" data-goto="files">عرض الكل</button>
+          </div>
+          <div id="recentFiles" class="activity"></div>
+        </section>
       </section>
 
-      <section class="view" data-panel="files">
-        <div class="section-head"><div><p class="eyebrow">كتالوج المعرفة</p><h2>إدارة الملفات والإصدارات</h2><p>أنشئ مسودة، عالجها، ثم انشرها بعد التحقق. تبقى النسخة السابقة فعالة عند الفشل.</p></div><div class="actions"><button class="secondary" id="adoptAll" title="كل ملف قديم بلا سجل صلاحيات يدخل السجل (منشور/جامعة عام) لتضبط أدواره">استيراد القديم للسجل</button><button class="primary" data-open="fileModal">+ ملف جديد</button></div></div>
-        <div class="panel table-panel"><div class="filters"><input id="fileSearch" type="search" placeholder="ابحث باسم الملف…" /><span class="live-dot"></span><span>حالة الفهرس مباشرة</span></div><div class="table-wrap"><table><thead><tr><th>الملف</th><th>التصنيف</th><th>النسخة</th><th>الحالة</th><th>الأدوار</th><th>الإجراءات</th></tr></thead><tbody id="filesBody"></tbody></table></div></div>
+      <section class="view" data-panel="files" aria-labelledby="filesTitle">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">كتالوج المعرفة</p>
+            <h2 id="filesTitle">إدارة الملفات والإصدارات</h2>
+            <p>أنشئ مسودة، عالجها، ثم انشرها بعد التحقق. تبقى النسخة السابقة فعالة عند الفشل.</p>
+          </div>
+          <div class="actions">
+            <button
+              class="secondary"
+              id="adoptAll"
+              type="button"
+              title="استيراد الملفات القديمة إلى سجل الصلاحيات"
+            >استيراد القديم للسجل</button>
+            <button class="primary" type="button" data-open="fileModal">+ ملف جديد</button>
+          </div>
+        </div>
+
+        <div class="panel table-panel">
+          <div class="filters">
+            <label class="sr-only" for="fileSearch">البحث في الملفات</label>
+            <input id="fileSearch" type="search" placeholder="ابحث باسم الملف…" />
+            <span class="live-dot" aria-hidden="true"></span>
+            <span>حالة الفهرس مباشرة</span>
+          </div>
+          <div class="table-wrap" tabindex="0" aria-label="جدول الملفات">
+            <table>
+              <caption class="sr-only">الملفات والإصدارات والصلاحيات</caption>
+              <thead>
+                <tr>
+                  <th scope="col">الملف</th>
+                  <th scope="col">التصنيف</th>
+                  <th scope="col">النسخة</th>
+                  <th scope="col">الحالة</th>
+                  <th scope="col">الأدوار</th>
+                  <th scope="col">الإجراءات</th>
+                </tr>
+              </thead>
+              <tbody id="filesBody"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
-      <section class="view" data-panel="employees">
-        <div class="section-head"><div><p class="eyebrow">الهوية والوصول</p><h2>حسابات الموظفين</h2><p>إنشاء وتفعيل وتعطيل الحسابات وإنهاء الجلسات دون كشف كلمة مرور أو توكن.</p></div><button class="primary" data-open="employeeModal">+ موظف جديد</button></div>
-        <div class="panel table-panel"><div class="filters"><input id="employeeSearch" type="search" placeholder="ابحث بالاسم أو القسم…" /></div><div class="table-wrap"><table><thead><tr><th>الموظف</th><th>القسم</th><th>المسمى</th><th>الحالة</th><th>المجموعات</th><th>الإجراءات</th></tr></thead><tbody id="employeesBody"></tbody></table></div></div>
+      <section class="view" data-panel="employees" aria-labelledby="employeesTitle">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">الهوية والوصول</p>
+            <h2 id="employeesTitle">حسابات الموظفين</h2>
+            <p>إنشاء وتفعيل وتعطيل الحسابات وإنهاء الجلسات دون كشف كلمة مرور أو توكن.</p>
+          </div>
+          <button class="primary" type="button" data-open="employeeModal">+ موظف جديد</button>
+        </div>
+
+        <div class="panel table-panel">
+          <div class="filters">
+            <label class="sr-only" for="employeeSearch">البحث في حسابات الموظفين</label>
+            <input id="employeeSearch" type="search" placeholder="ابحث بالاسم أو القسم…" />
+          </div>
+          <div class="table-wrap" tabindex="0" aria-label="جدول حسابات الموظفين">
+            <table>
+              <caption class="sr-only">حسابات الموظفين وحالات الوصول</caption>
+              <thead>
+                <tr>
+                  <th scope="col">الموظف</th>
+                  <th scope="col">القسم</th>
+                  <th scope="col">المسمى</th>
+                  <th scope="col">الحالة</th>
+                  <th scope="col">المجموعات</th>
+                  <th scope="col">الإجراءات</th>
+                </tr>
+              </thead>
+              <tbody id="employeesBody"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
-      <section class="view" data-panel="audit">
-        <div class="section-head"><div><p class="eyebrow">قابلية التتبع</p><h2>سجل التدقيق</h2><p>عمليات الإدارة الحساسة فقط، مع استبعاد كلمات المرور والتوكنات.</p></div><button class="secondary" id="refreshAudit">تحديث</button></div>
-        <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>الوقت</th><th>المنفذ</th><th>العملية</th><th>الهدف</th><th>التفاصيل</th></tr></thead><tbody id="auditBody"></tbody></table></div></div>
+      <section class="view" data-panel="audit" aria-labelledby="auditTitle">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">قابلية التتبع</p>
+            <h2 id="auditTitle">سجل التدقيق</h2>
+            <p>عمليات الإدارة الحساسة فقط، مع استبعاد كلمات المرور والتوكنات.</p>
+          </div>
+          <button class="secondary" id="refreshAudit" type="button">تحديث</button>
+        </div>
+
+        <div class="panel table-panel">
+          <div class="table-wrap" tabindex="0" aria-label="جدول سجل التدقيق">
+            <table>
+              <caption class="sr-only">سجل عمليات الإدارة الحساسة</caption>
+              <thead>
+                <tr>
+                  <th scope="col">الوقت</th>
+                  <th scope="col">المنفذ</th>
+                  <th scope="col">العملية</th>
+                  <th scope="col">الهدف</th>
+                  <th scope="col">التفاصيل</th>
+                </tr>
+              </thead>
+              <tbody id="auditBody"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
     </main>
   </div>
 
-  <div class="modal" id="fileModal" aria-hidden="true"><div class="modal__card"><button class="modal__close" data-close>×</button><p class="eyebrow">مسودة معرفة</p><h2>رفع ملف JSON جديد</h2><form id="fileForm" class="portal-form"><label>اسم الملف<input name="collection" required minlength="2" placeholder="مثال: دليل_المنح_2026" /></label><label>التصنيف<select name="classification"><option value="university_public">جامعة عام</option><option value="student_records">سجلات طلاب</option><option value="employee_internal">موظفون داخلي</option><option value="employee_private">موظف خاص</option><option value="admin_only">أدمن فقط</option></select></label><fieldset><legend>الأدوار المسموح لها</legend><div class="checks" data-roles><label><input type="checkbox" name="roles" value="guest" checked /> زائر</label><label><input type="checkbox" name="roles" value="student" checked /> طالب</label><label><input type="checkbox" name="roles" value="employee" checked /> موظف</label><label><input type="checkbox" name="roles" value="admin" checked /> أدمن</label></div><p class="form-note" data-roles-hint></p></fieldset><label data-owner-wrap hidden>مالك الملف (رقم الطالب/الموظف)<input name="owner_id" placeholder="مطلوب للسجلات الخاصة بشخص واحد" /></label><label>المحتوى JSON<textarea name="documents" dir="ltr" required rows="9" spellcheck="false" placeholder='[{"العنوان":"...","المحتوى":"..."}]'></textarea></label><label class="check-inline"><input type="checkbox" name="publish_now" checked /> نشر فوراً بعد الحفظ (معالجة + نشر تلقائياً فتسري الصلاحيات مباشرة)</label><p class="form-note" data-msg></p><button class="primary" type="submit">حفظ</button></form></div></div>
+  <div
+    class="modal"
+    id="fileModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="fileModalTitle"
+    inert
+  >
+    <div class="modal__card" tabindex="-1">
+      <button class="modal__close" type="button" data-close aria-label="إغلاق نافذة رفع الملف">×</button>
+      <p class="eyebrow">مسودة معرفة</p>
+      <h2 id="fileModalTitle">رفع ملف JSON جديد</h2>
+      <form id="fileForm" class="portal-form">
+        <label>
+          اسم الملف
+          <input name="collection" required minlength="2" placeholder="مثال: دليل_المنح_2026" />
+        </label>
+        <label>
+          التصنيف
+          <select name="classification">
+            <option value="university_public">جامعة عام</option>
+            <option value="student_records">سجلات طلاب</option>
+            <option value="employee_internal">موظفون داخلي</option>
+            <option value="employee_private">موظف خاص</option>
+            <option value="admin_only">أدمن فقط</option>
+          </select>
+        </label>
+        <fieldset>
+          <legend>الأدوار المسموح لها</legend>
+          <div class="checks" data-roles>
+            <label><input type="checkbox" name="roles" value="guest" checked /> زائر</label>
+            <label><input type="checkbox" name="roles" value="student" checked /> طالب</label>
+            <label><input type="checkbox" name="roles" value="employee" checked /> موظف</label>
+            <label><input type="checkbox" name="roles" value="admin" checked /> أدمن</label>
+          </div>
+          <p class="form-note" data-roles-hint></p>
+        </fieldset>
+        <label data-owner-wrap hidden>
+          مالك الملف (رقم الطالب/الموظف)
+          <input name="owner_id" placeholder="مطلوب للسجلات الخاصة بشخص واحد" />
+        </label>
+        <label>
+          المحتوى JSON
+          <textarea
+            name="documents"
+            dir="ltr"
+            required
+            rows="9"
+            spellcheck="false"
+            placeholder='[{"العنوان":"...","المحتوى":"..."}]'
+          ></textarea>
+        </label>
+        <label class="check-inline">
+          <input type="checkbox" name="publish_now" checked />
+          نشر فوراً بعد الحفظ (معالجة + نشر تلقائياً فتسري الصلاحيات مباشرة)
+        </label>
+        <p class="form-note" data-msg role="status" aria-live="polite"></p>
+        <button class="primary" type="submit">حفظ</button>
+      </form>
+    </div>
+  </div>
 
-  <div class="modal" id="accessModal" aria-hidden="true"><div class="modal__card"><button class="modal__close" data-close>×</button><p class="eyebrow">صلاحيات الملف</p><h2 id="accessTitle">تعديل الصلاحيات</h2><form id="accessForm" class="portal-form"><label>التصنيف<select name="classification"><option value="university_public">جامعة عام</option><option value="student_records">سجلات طلاب</option><option value="employee_internal">موظفون داخلي</option><option value="employee_private">موظف خاص</option><option value="admin_only">أدمن فقط</option></select></label><fieldset><legend>الأدوار المسموح لها</legend><div class="checks" data-roles><label><input type="checkbox" name="roles" value="guest" /> زائر</label><label><input type="checkbox" name="roles" value="student" /> طالب</label><label><input type="checkbox" name="roles" value="employee" /> موظف</label><label><input type="checkbox" name="roles" value="admin" checked /> أدمن</label></div><p class="form-note" data-roles-hint></p></fieldset><label data-owner-wrap hidden>مالك الملف (رقم الطالب/الموظف)<input name="owner_id" placeholder="مطلوب للسجلات الخاصة بشخص واحد" /></label><p class="form-note" data-msg></p><button class="primary" type="submit">حفظ الصلاحيات</button></form></div></div>
+  <div
+    class="modal"
+    id="accessModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="accessTitle"
+    inert
+  >
+    <div class="modal__card" tabindex="-1">
+      <button class="modal__close" type="button" data-close aria-label="إغلاق نافذة الصلاحيات">×</button>
+      <p class="eyebrow">صلاحيات الملف</p>
+      <h2 id="accessTitle">تعديل الصلاحيات</h2>
+      <form id="accessForm" class="portal-form">
+        <label>
+          التصنيف
+          <select name="classification">
+            <option value="university_public">جامعة عام</option>
+            <option value="student_records">سجلات طلاب</option>
+            <option value="employee_internal">موظفون داخلي</option>
+            <option value="employee_private">موظف خاص</option>
+            <option value="admin_only">أدمن فقط</option>
+          </select>
+        </label>
+        <fieldset>
+          <legend>الأدوار المسموح لها</legend>
+          <div class="checks" data-roles>
+            <label><input type="checkbox" name="roles" value="guest" /> زائر</label>
+            <label><input type="checkbox" name="roles" value="student" /> طالب</label>
+            <label><input type="checkbox" name="roles" value="employee" /> موظف</label>
+            <label><input type="checkbox" name="roles" value="admin" checked /> أدمن</label>
+          </div>
+          <p class="form-note" data-roles-hint></p>
+        </fieldset>
+        <label data-owner-wrap hidden>
+          مالك الملف (رقم الطالب/الموظف)
+          <input name="owner_id" placeholder="مطلوب للسجلات الخاصة بشخص واحد" />
+        </label>
+        <p class="form-note" data-msg role="status" aria-live="polite"></p>
+        <button class="primary" type="submit">حفظ الصلاحيات</button>
+      </form>
+    </div>
+  </div>
 
-  <div class="modal" id="employeeModal" aria-hidden="true"><div class="modal__card"><button class="modal__close" data-close>×</button><p class="eyebrow">حساب عمل</p><h2>إنشاء حساب موظف</h2><form id="employeeForm" class="portal-form grid-form"><label>الرقم الوظيفي<input name="employee_id" required placeholder="EMP-1001" /></label><label>الاسم<input name="name" required /></label><label>القسم<input name="department" required /></label><label>المسمى الوظيفي<input name="job_title" required /></label><label>الراتب - اختياري<input name="salary" type="number" min="0" step="0.01" /></label><label>كلمة مرور مؤقتة<input name="temporary_password" type="password" minlength="8" required /></label><label class="wide">مجموعات الوصول<input name="access_groups" placeholder="admissions, registrar" /></label><p class="form-note wide" data-msg></p><button class="primary wide" type="submit">إنشاء الحساب</button></form></div></div>
+  <div
+    class="modal"
+    id="employeeModal"
+    role="dialog"
+    aria-modal="true"
+    aria-hidden="true"
+    aria-labelledby="employeeModalTitle"
+    inert
+  >
+    <div class="modal__card" tabindex="-1">
+      <button class="modal__close" type="button" data-close aria-label="إغلاق نافذة إنشاء الموظف">×</button>
+      <p class="eyebrow">حساب عمل</p>
+      <h2 id="employeeModalTitle">إنشاء حساب موظف</h2>
+      <form id="employeeForm" class="portal-form grid-form">
+        <label>
+          الرقم الوظيفي
+          <input name="employee_id" required placeholder="EMP-1001" autocomplete="username" />
+        </label>
+        <label>
+          الاسم
+          <input name="name" required autocomplete="name" />
+        </label>
+        <label>
+          القسم
+          <input name="department" required />
+        </label>
+        <label>
+          المسمى الوظيفي
+          <input name="job_title" required />
+        </label>
+        <label>
+          الراتب - اختياري
+          <input name="salary" type="number" min="0" step="0.01" />
+        </label>
+        <label>
+          كلمة مرور مؤقتة
+          <input name="temporary_password" type="password" minlength="8" required autocomplete="new-password" />
+        </label>
+        <label class="wide">
+          مجموعات الوصول
+          <input name="access_groups" placeholder="admissions, registrar" />
+        </label>
+        <p class="form-note wide" data-msg role="status" aria-live="polite"></p>
+        <button class="primary wide" type="submit">إنشاء الحساب</button>
+      </form>
+    </div>
+  </div>
 
-  <div class="toast" id="toast" role="status"></div>
-  <script src="admin.js?v=2"></script>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script src="admin.js?v=10"></script>
 </body>
 </html>

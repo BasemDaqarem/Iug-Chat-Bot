@@ -1,0 +1,56 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - heading "بوابة المساعد الجامعي" [level=1] [ref=e9]
+      - paragraph [ref=e10]: الجامعة الإسلامية بغزة
+    - tablist "نوع الدخول" [ref=e11]:
+      - tab "تسجيل الدخول" [ref=e13] [cursor=pointer]
+      - tab "حساب جديد" [ref=e14] [cursor=pointer]
+    - generic [ref=e15]:
+      - paragraph: بيانات أكاديمية تجريبية يضيفها الطالب لاختبار البوت، وليست سجلاً رسمياً من الجامعة.
+      - generic:
+        - generic [ref=e16]: الاسم
+        - textbox "الاسم" [disabled] [ref=e20]:
+          - /placeholder: اكتب اسمك الكامل
+      - generic:
+        - generic [ref=e21]: التخصص
+        - textbox "التخصص" [disabled] [ref=e25]:
+          - /placeholder: "مثال: هندسة الحاسوب"
+      - generic:
+        - generic [ref=e26]:
+          - generic [ref=e27]: المعدل من 100
+          - spinbutton "المعدل من 100" [disabled] [ref=e29]
+        - generic [ref=e30]:
+          - generic [ref=e31]: الترتيب على الدفعة
+          - spinbutton "الترتيب على الدفعة" [disabled] [ref=e33]
+      - generic:
+        - generic [ref=e34]: الحالة الأكاديمية
+        - combobox "الحالة الأكاديمية" [disabled] [ref=e36] [cursor=pointer]:
+          - option "اختر الحالة" [selected]
+          - option "منتظم"
+          - option "ممتاز"
+          - option "جيد"
+          - option "متعثر (في خطر أكاديمي)"
+          - option "تحت إنذار أكاديمي"
+          - option "متخرج"
+      - generic [ref=e37]:
+        - generic [ref=e38]: الرقم الجامعي أو الوظيفي
+        - textbox "الرقم الجامعي أو الوظيفي" [ref=e42]:
+          - /placeholder: "مثال: 120210001 أو EMP-1001"
+      - generic [ref=e43]:
+        - generic [ref=e44]: كلمة المرور
+        - generic [ref=e45]:
+          - textbox "كلمة المرور" [ref=e48]:
+            - /placeholder: ••••••••
+          - button "إظهار كلمة المرور" [ref=e49] [cursor=pointer]
+      - status [ref=e52]
+      - button "تسجيل الدخول" [ref=e53] [cursor=pointer]
+    - button "✦ المتابعة كزائر الوصول إلى معلومات الجامعة العامة فقط" [ref=e57] [cursor=pointer]:
+      - generic [ref=e58]: ✦
+      - text: المتابعة كزائر
+      - generic [ref=e59]: الوصول إلى معلومات الجامعة العامة فقط
+    - paragraph [ref=e60]:
+      - generic [ref=e61]:
+        - text: ليس لديك حساب؟
+        - link "أنشئ حساباً" [ref=e62] [cursor=pointer]:
+          - /url: "#"

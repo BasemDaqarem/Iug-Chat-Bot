@@ -1,0 +1,65 @@
+- generic [active] [ref=e1]:
+  - link "تخطي إلى المحتوى الرئيسي" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - main [ref=e3]:
+    - region [ref=e4]:
+      - complementary "الجامعة الإسلامية بغزة" [ref=e5]:
+        - generic [ref=e6]:
+          - img "شعار الجامعة الإسلامية بغزة" [ref=e8]
+          - paragraph [ref=e9]: منصة جامعية رقمية موثوقة
+          - heading "بوابة المساعد الجامعي" [level=1] [ref=e10]
+          - paragraph [ref=e11]: الجامعة الإسلامية بغزة
+        - paragraph [ref=e12]: بوابتك الذكية للوصول إلى المعلومات الجامعية والخدمات المساندة ضمن تجربة عربية واضحة وآمنة.
+        - list "مزايا البوابة" [ref=e13]:
+          - listitem [ref=e14]: ✓ إجابات مبنية على مصادر الجامعة
+          - listitem [ref=e15]: ✓ وصول مخصص حسب نوع الحساب
+          - listitem [ref=e16]: ✓ واجهة عربية متوافقة مع جميع الأجهزة
+      - region [ref=e17]:
+        - generic [ref=e18]:
+          - paragraph [ref=e19]: الدخول إلى البوابة
+          - heading "أهلاً وسهلاً بك" [level=2] [ref=e20]
+          - paragraph [ref=e21]: أدخل بياناتك للمتابعة إلى المساعد الجامعي.
+        - tablist "نوع الدخول" [ref=e22]:
+          - tab "تسجيل الدخول" [selected] [ref=e24] [cursor=pointer]
+          - tab "حساب جديد" [ref=e25] [cursor=pointer]
+        - generic [ref=e26]:
+          - generic: الاسم
+          - generic:
+            - textbox [disabled]:
+              - /placeholder: اكتب اسمك الكامل
+          - generic: التخصص
+          - generic:
+            - textbox [disabled]:
+              - /placeholder: "مثال: هندسة الحاسوب"
+          - generic:
+            - generic: المعدل من 100
+            - generic:
+              - spinbutton [disabled]
+          - generic:
+            - generic: الترتيب على الدفعة
+            - generic:
+              - spinbutton [disabled]
+          - generic: الحالة الأكاديمية
+          - generic:
+            - combobox [disabled]
+          - generic [ref=e27]:
+            - generic [ref=e28]: الرقم الجامعي أو الوظيفي
+            - textbox "الرقم الجامعي أو الوظيفي" [ref=e32]:
+              - /placeholder: "مثال: 120210001 أو EMP-1001"
+          - generic [ref=e33]:
+            - generic [ref=e34]: كلمة المرور
+            - generic [ref=e35]:
+              - textbox "كلمة المرور" [ref=e38]:
+                - /placeholder: ••••••••
+              - button "إظهار كلمة المرور" [ref=e39] [cursor=pointer]
+          - status [ref=e42]
+          - button "تسجيل الدخول" [ref=e43] [cursor=pointer]
+        - button "المتابعة كزائر الوصول إلى معلومات الجامعة العامة فقط" [ref=e47] [cursor=pointer]:
+          - generic [ref=e48]: ؟
+          - text: المتابعة كزائر
+          - generic [ref=e49]: الوصول إلى معلومات الجامعة العامة فقط
+        - paragraph [ref=e50]:
+          - generic [ref=e51]:
+            - text: ليس لديك حساب؟
+            - link "أنشئ حساباً" [ref=e52] [cursor=pointer]:
+              - /url: "#"

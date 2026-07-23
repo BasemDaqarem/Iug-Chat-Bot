@@ -3,160 +3,230 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0d0d0f" />
+  <meta name="theme-color" content="#0076df" />
+  <meta name="description" content="بوابة المساعد الجامعي للجامعة الإسلامية بغزة" />
   <title>بوابة المساعد الجامعي — الجامعة الإسلامية بغزة</title>
-  <link rel="stylesheet" href="styles.css?v=3" />
+  <link rel="icon" type="image/png" href="assets/iug-logo.png" />
+  <link rel="stylesheet" href="styles.css?v=10" />
 </head>
 <body>
-  <!-- Ambient luxury background -->
+  <a class="skip-link" href="#main-content">تخطي إلى المحتوى الرئيسي</a>
+
   <div class="aura" aria-hidden="true">
-    <span class="glow glow--gold"></span>
-    <span class="glow glow--soft"></span>
-    <span class="grain"></span>
+    <span class="glow glow--green"></span>
+    <span class="glow glow--blue"></span>
   </div>
 
-  <main class="stage">
-    <section class="card glass" id="card">
+  <main class="stage" id="main-content" tabindex="-1">
+    <section class="card" id="card" aria-labelledby="authTitle">
+      <aside class="brand-panel" aria-label="الجامعة الإسلامية بغزة">
+        <header class="brand reveal" style="--i:0">
+          <span class="brand__logo-wrap">
+            <img
+              class="brand__logo"
+              src="assets/iug-logo.png"
+              alt="شعار الجامعة الإسلامية بغزة"
+              width="233"
+              height="233"
+            />
+          </span>
+          <p class="brand__eyebrow">منصة جامعية رقمية موثوقة</p>
+          <h1 class="brand__title" id="authTitle">بوابة المساعد الجامعي</h1>
+          <p class="brand__sub">الجامعة الإسلامية بغزة</p>
+        </header>
 
-      <!-- Brand -->
-      <header class="brand reveal" style="--i:0">
-        <span class="crest" aria-hidden="true">
-          <svg viewBox="0 0 64 64" width="46" height="46">
-            <defs>
-              <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#F3DFA2"/>
-                <stop offset="0.5" stop-color="#D4AF37"/>
-                <stop offset="1" stop-color="#A8801E"/>
-              </linearGradient>
-            </defs>
-            <path fill="url(#g)" d="M32 3l4.6 9.3 10.3 1.5-7.4 7.3 1.7 10.2L32 26.4l-9.2 4.9 1.7-10.2-7.4-7.3 10.3-1.5z"/>
-            <path fill="none" stroke="url(#g)" stroke-width="2.2" stroke-linejoin="round"
-                  d="M14 30c0 13 8 22 18 27 10-5 18-14 18-27"/>
-          </svg>
-        </span>
-        <h1 class="brand__title">بوابة المساعد الجامعي</h1>
-        <p class="brand__sub">الجامعة الإسلامية بغزة</p>
-      </header>
-
-      <!-- Login / Register switch -->
-      <div class="switch reveal" style="--i:1" role="tablist" aria-label="نوع الدخول">
-        <span class="switch__thumb" id="thumb"></span>
-        <button class="switch__opt is-active" data-mode="login" role="tab">تسجيل الدخول</button>
-        <button class="switch__opt" data-mode="register" role="tab">حساب جديد</button>
-      </div>
-
-      <!-- Form -->
-      <form class="form" id="authForm" novalidate>
-        <p class="demo-note reveal only-register" style="--i:2">
-          بيانات أكاديمية تجريبية يضيفها الطالب لاختبار البوت، وليست سجلاً رسمياً من الجامعة.
+        <p class="brand__intro">
+          بوابتك الذكية للوصول إلى المعلومات الجامعية والخدمات المساندة ضمن تجربة عربية واضحة وآمنة.
         </p>
 
-        <!-- Name (register only) -->
-        <div class="field reveal only-register" style="--i:3" data-role="name">
-          <label class="field__label" for="name">الاسم</label>
-          <div class="field__box">
-            <svg class="field__icon" viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-5 0-9 2.7-9 6v1h18v-1c0-3.3-4-6-9-6Z"/></svg>
-            <input id="name" name="name" type="text" autocomplete="name"
-                   placeholder="اكتب اسمك الكامل" />
-          </div>
-          <span class="field__err" data-err="name"></span>
+        <ul class="brand__highlights" aria-label="مزايا البوابة">
+          <li>إجابات مبنية على مصادر الجامعة</li>
+          <li>وصول مخصص حسب نوع الحساب</li>
+          <li>واجهة عربية متوافقة مع جميع الأجهزة</li>
+        </ul>
+      </aside>
+
+      <section class="auth-panel" aria-labelledby="authPanelTitle">
+        <header class="auth-head reveal" style="--i:0">
+          <p class="auth-head__eyebrow">الدخول إلى البوابة</p>
+          <h2 id="authPanelTitle">أهلاً وسهلاً بك</h2>
+          <p>أدخل بياناتك للمتابعة إلى المساعد الجامعي.</p>
+        </header>
+
+        <div class="switch reveal" style="--i:1" role="tablist" aria-label="نوع الدخول">
+          <span class="switch__thumb" id="thumb" aria-hidden="true"></span>
+          <button
+            class="switch__opt is-active"
+            id="loginTab"
+            data-mode="login"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="authForm"
+          >تسجيل الدخول</button>
+          <button
+            class="switch__opt"
+            id="registerTab"
+            data-mode="register"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="authForm"
+            tabindex="-1"
+          >حساب جديد</button>
         </div>
 
-        <div class="field reveal only-register" style="--i:4" data-role="major">
-          <label class="field__label" for="major">التخصص</label>
-          <div class="field__box">
-            <svg class="field__icon" viewBox="0 0 24 24"><path d="M12 3 1 9l11 6 9-4.9V17h2V9L12 3Zm-7 9.2V17c0 2 3.1 4 7 4s7-2 7-4v-4.8L12 16l-7-3.8Z"/></svg>
-            <input id="major" name="major" type="text" autocomplete="organization-title"
-                   placeholder="مثال: هندسة الحاسوب" maxlength="120" />
-          </div>
-          <span class="field__err" data-err="major"></span>
-        </div>
+        <form class="form" id="authForm" novalidate>
+          <p class="demo-note only-register" id="registerNote" aria-hidden="true" inert>
+            بيانات أكاديمية تجريبية يضيفها الطالب لاختبار البوت، وليست سجلاً رسمياً من الجامعة.
+          </p>
 
-        <div class="register-grid only-register reveal" style="--i:5">
-          <div class="field" data-role="gpa">
-            <label class="field__label" for="gpa">المعدل من 100</label>
+          <div class="field only-register" data-role="name" aria-hidden="true" inert>
+            <label class="field__label" for="name">الاسم</label>
             <div class="field__box">
-              <input id="gpa" name="gpa" type="number" inputmode="decimal"
-                     min="0" max="100" step="0.01" placeholder="مثال: 83.5" />
+              <svg class="field__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-5 0-9 2.7-9 6v1h18v-1c0-3.3-4-6-9-6Z"/></svg>
+              <input
+                id="name"
+                name="name"
+                type="text"
+                autocomplete="name"
+                placeholder="اكتب اسمك الكامل"
+                aria-describedby="nameError"
+              />
             </div>
-            <span class="field__err" data-err="gpa"></span>
+            <span class="field__err" id="nameError" data-err="name" aria-live="polite"></span>
           </div>
 
-          <div class="field" data-role="rank">
-            <label class="field__label" for="rank">الترتيب على الدفعة</label>
+          <div class="field only-register" data-role="major" aria-hidden="true" inert>
+            <label class="field__label" for="major">التخصص</label>
             <div class="field__box">
-              <input id="rank" name="rank" type="number" inputmode="numeric"
-                     min="1" step="1" placeholder="مثال: 12" />
+              <svg class="field__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 1 9l11 6 9-4.9V17h2V9L12 3Zm-7 9.2V17c0 2 3.1 4 7 4s7-2 7-4v-4.8L12 16l-7-3.8Z"/></svg>
+              <input
+                id="major"
+                name="major"
+                type="text"
+                autocomplete="organization-title"
+                placeholder="مثال: هندسة الحاسوب"
+                maxlength="120"
+                aria-describedby="majorError"
+              />
             </div>
-            <span class="field__err" data-err="rank"></span>
+            <span class="field__err" id="majorError" data-err="major" aria-live="polite"></span>
           </div>
-        </div>
 
-        <div class="field reveal only-register" style="--i:6" data-role="academic_status">
-          <label class="field__label" for="academic_status">الحالة الأكاديمية</label>
-          <div class="field__box">
-            <select id="academic_status" name="academic_status">
-              <option value="">اختر الحالة</option>
-              <option value="regular">منتظم</option>
-              <option value="excellent">ممتاز</option>
-              <option value="good">جيد</option>
-              <option value="at_risk">متعثر (في خطر أكاديمي)</option>
-              <option value="probation">تحت إنذار أكاديمي</option>
-              <option value="graduated">متخرج</option>
-            </select>
+          <div class="register-grid only-register" aria-hidden="true" inert>
+            <div class="field" data-role="gpa">
+              <label class="field__label" for="gpa">المعدل من 100</label>
+              <div class="field__box">
+                <input
+                  id="gpa"
+                  name="gpa"
+                  type="number"
+                  inputmode="decimal"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  placeholder="مثال: 83.5"
+                  aria-describedby="gpaError"
+                />
+              </div>
+              <span class="field__err" id="gpaError" data-err="gpa" aria-live="polite"></span>
+            </div>
+
+            <div class="field" data-role="rank">
+              <label class="field__label" for="rank">الترتيب على الدفعة</label>
+              <div class="field__box">
+                <input
+                  id="rank"
+                  name="rank"
+                  type="number"
+                  inputmode="numeric"
+                  min="1"
+                  step="1"
+                  placeholder="مثال: 12"
+                  aria-describedby="rankError"
+                />
+              </div>
+              <span class="field__err" id="rankError" data-err="rank" aria-live="polite"></span>
+            </div>
           </div>
-          <span class="field__err" data-err="academic_status"></span>
-        </div>
 
-        <!-- University / employee ID -->
-        <div class="field reveal" style="--i:7" data-role="student_id">
-          <label class="field__label" for="student_id" id="identifierLabel">الرقم الجامعي أو الوظيفي</label>
-          <div class="field__box">
-            <svg class="field__icon" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 5v2h5V9H6Zm0 4v2h8v-2H6Zm10-4v6h2V9h-2Z"/></svg>
-            <input id="student_id" name="student_id" type="text"
-                   autocomplete="username" placeholder="مثال: 120210001 أو EMP-1001" maxlength="40" />
+          <div class="field only-register" data-role="academic_status" aria-hidden="true" inert>
+            <label class="field__label" for="academic_status">الحالة الأكاديمية</label>
+            <div class="field__box">
+              <select id="academic_status" name="academic_status" aria-describedby="academicStatusError">
+                <option value="">اختر الحالة</option>
+                <option value="regular">منتظم</option>
+                <option value="excellent">ممتاز</option>
+                <option value="good">جيد</option>
+                <option value="at_risk">متعثر (في خطر أكاديمي)</option>
+                <option value="probation">تحت إنذار أكاديمي</option>
+                <option value="graduated">متخرج</option>
+              </select>
+            </div>
+            <span class="field__err" id="academicStatusError" data-err="academic_status" aria-live="polite"></span>
           </div>
-          <span class="field__err" data-err="student_id"></span>
-        </div>
 
-        <!-- Password -->
-        <div class="field reveal" style="--i:8" data-role="password">
-          <label class="field__label" for="password">كلمة المرور</label>
-          <div class="field__box">
-            <svg class="field__icon" viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 0 1 6 0v3H9Z"/></svg>
-            <input id="password" name="password" type="password"
-                   autocomplete="current-password" placeholder="••••••••" maxlength="128" />
-            <button type="button" class="field__eye" id="eye" aria-label="إظهار كلمة المرور">
-              <svg viewBox="0 0 24 24"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7Zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8Z"/></svg>
-            </button>
+          <div class="field" data-role="student_id">
+            <label class="field__label" for="student_id" id="identifierLabel">الرقم الجامعي أو الوظيفي</label>
+            <div class="field__box">
+              <svg class="field__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 5v2h5V9H6Zm0 4v2h8v-2H6Zm10-4v6h2V9h-2Z"/></svg>
+              <input
+                id="student_id"
+                name="student_id"
+                type="text"
+                autocomplete="username"
+                placeholder="مثال: 120210001 أو EMP-1001"
+                maxlength="40"
+                aria-describedby="studentIdError"
+              />
+            </div>
+            <span class="field__err" id="studentIdError" data-err="student_id" aria-live="polite"></span>
           </div>
-          <span class="field__err" data-err="password"></span>
-        </div>
 
-        <!-- Form-level message -->
-        <p class="form__msg" id="formMsg" role="status"></p>
+          <div class="field" data-role="password">
+            <label class="field__label" for="password">كلمة المرور</label>
+            <div class="field__box">
+              <svg class="field__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 0 1 6 0v3H9Z"/></svg>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                placeholder="••••••••"
+                maxlength="128"
+                aria-describedby="passwordError"
+              />
+              <button type="button" class="field__eye" id="eye" aria-label="إظهار كلمة المرور">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7Zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8Z"/></svg>
+              </button>
+            </div>
+            <span class="field__err" id="passwordError" data-err="password" aria-live="polite"></span>
+          </div>
 
-        <!-- Submit -->
-        <button class="submit reveal" style="--i:5" id="submit" type="submit">
-          <span class="submit__label">تسجيل الدخول</span>
-          <span class="submit__spinner" aria-hidden="true"></span>
-          <svg class="submit__check" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <p class="form__msg" id="formMsg" role="status" aria-live="polite" aria-atomic="true"></p>
+
+          <button class="submit" id="submit" type="submit">
+            <span class="submit__label">تسجيل الدخول</span>
+            <span class="submit__spinner" aria-hidden="true"></span>
+            <svg class="submit__check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        </form>
+
+        <button class="guest-entry" id="guestEntry" type="button">
+          <span class="guest-entry__icon" aria-hidden="true">؟</span>
+          المتابعة كزائر
+          <small>الوصول إلى معلومات الجامعة العامة فقط</small>
         </button>
-      </form>
 
-      <button class="guest-entry reveal" style="--i:6" id="guestEntry" type="button">
-        <span class="guest-entry__icon">✦</span>
-        المتابعة كزائر
-        <small>الوصول إلى معلومات الجامعة العامة فقط</small>
-      </button>
-
-      <p class="foot reveal" style="--i:6">
-        <span data-foot="login">ليس لديك حساب؟ <a href="#" data-goto="register">أنشئ حساباً</a></span>
-        <span data-foot="register" hidden>لديك حساب بالفعل؟ <a href="#" data-goto="login">سجّل الدخول</a></span>
-      </p>
+        <p class="foot">
+          <span data-foot="login">ليس لديك حساب؟ <a href="#" data-goto="register">أنشئ حساباً</a></span>
+          <span data-foot="register" hidden>لديك حساب بالفعل؟ <a href="#" data-goto="login">سجّل الدخول</a></span>
+        </p>
+      </section>
     </section>
   </main>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

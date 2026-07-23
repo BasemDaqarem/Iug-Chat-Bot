@@ -1,0 +1,23 @@
+- generic [ref=f1e1]:
+  - link "تخطي إلى المحادثة" [ref=f1e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=f1e3]:
+    - banner [ref=f1e4]:
+      - img "شعار الجامعة الإسلامية بغزة" [ref=f1e6]
+      - generic [ref=f1e7]:
+        - strong [ref=f1e8]: المساعد الجامعي
+        - generic [ref=f1e9]: زائر
+      - button "تسجيل الخروج" [ref=f1e10] [cursor=pointer]
+    - log "سجل المحادثة" [ref=f1e13]:
+      - generic [ref=f1e14]:
+        - generic [ref=f1e15]: ج
+        - generic [ref=f1e16]: أهلاً زائر 👋 أنا مساعد الجامعة الإسلامية بغزة. سأجيبك ضمن صلاحية زائر فقط.
+      - generic "أسئلة مقترحة" [ref=f1e17]:
+        - button "كم رسوم كلية الطب للساعة؟" [ref=f1e18] [cursor=pointer]
+        - button "ما معدل القبول في كلية الهندسة؟" [ref=f1e19] [cursor=pointer]
+        - button "ما تخصصات الماجستير المتاحة؟" [ref=f1e20] [cursor=pointer]
+    - form "إرسال سؤال إلى المساعد" [ref=f1e21]:
+      - generic [ref=f1e22]: اكتب سؤالك للجامعة
+      - textbox "اكتب سؤالك للجامعة" [active] [ref=f1e23]:
+        - /placeholder: اكتب سؤالك للجامعة…
+      - button "إرسال السؤال" [ref=f1e24] [cursor=pointer]

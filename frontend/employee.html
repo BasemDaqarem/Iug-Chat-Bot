@@ -3,51 +3,217 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#10233d" />
+  <meta name="theme-color" content="#0076df" />
+  <meta name="description" content="بوابة موظفي الجامعة الإسلامية بغزة" />
   <title>بوابة الموظف — المساعد الجامعي</title>
-  <link rel="stylesheet" href="styles.css?v=4" />
-  <link rel="stylesheet" href="portal.css?v=1" />
-  <link rel="stylesheet" href="employee.css?v=1" />
+  <link rel="icon" type="image/png" href="assets/iug-logo.png" />
+  <link rel="stylesheet" href="styles.css?v=10" />
+  <link rel="stylesheet" href="portal.css?v=10" />
+  <link rel="stylesheet" href="employee.css?v=10" />
 </head>
 <body class="portal-body">
+  <a class="skip-link" href="#main-content">تخطي إلى المحتوى الرئيسي</a>
+
   <div class="portal-shell">
-    <aside class="side" id="side">
-      <div class="side__brand"><span>✦</span><div><strong>IUG Assistant</strong><small>بوابة الموظف</small></div></div>
-      <nav class="side__nav">
-        <button class="nav-item is-active" data-view="home"><span>⌂</span>الرئيسية</button>
-        <button class="nav-item" data-view="students"><span>♙</span>دليل الطلاب</button>
-        <button class="nav-item" data-view="profile"><span>◇</span>ملفي الوظيفي</button>
+    <aside class="side" id="side" aria-label="قائمة بوابة الموظف">
+      <div class="side__brand">
+        <span class="side__brand-logo">
+          <img src="assets/iug-logo.png" alt="شعار الجامعة الإسلامية بغزة" width="233" height="233" />
+        </span>
+        <div>
+          <strong>المساعد الجامعي</strong>
+          <small>بوابة الموظف</small>
+        </div>
+      </div>
+
+      <nav class="side__nav" aria-label="التنقل الرئيسي">
+        <button class="nav-item is-active" type="button" data-view="home" aria-current="page">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></svg>
+          </span>
+          الرئيسية
+        </button>
+        <button class="nav-item" type="button" data-view="students">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.5-4 2.6-6 5.5-6s5 2 5.5 6"/><path d="M15 6h6M15 10h5M17 14h3"/></svg>
+          </span>
+          دليل الطلاب
+        </button>
+        <button class="nav-item" type="button" data-view="profile">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.7-4.4 3.1-6.5 7-6.5s6.3 2.1 7 6.5"/></svg>
+          </span>
+          ملفي الوظيفي
+        </button>
       </nav>
-      <div class="side__foot"><a href="chat.html">فتح الشات بصفحة كاملة</a><button id="logout">تسجيل الخروج</button></div>
+
+      <div class="side__foot">
+        <a href="chat.html">فتح الشات بصفحة كاملة</a>
+        <button id="logout" type="button">تسجيل الخروج</button>
+      </div>
     </aside>
-    <main class="workspace">
-      <header class="topbar"><button class="icon-btn mobile-only" id="menu">☰</button><div><p class="eyebrow">مساحة الموظف الآمنة</p><h1 id="viewTitle">الرئيسية</h1></div><div class="operator"><span class="operator__avatar" id="avatar">م</span><div><strong id="operatorName">الموظف</strong><small id="operatorId">…</small></div></div></header>
 
-      <section class="view is-active" data-panel="home">
+    <button
+      class="side-backdrop"
+      id="sideBackdrop"
+      type="button"
+      aria-label="إغلاق قائمة التنقل"
+      tabindex="-1"
+    ></button>
+
+    <main class="workspace" id="main-content" tabindex="-1">
+      <header class="topbar">
+        <button
+          class="icon-btn mobile-only"
+          id="menu"
+          type="button"
+          aria-label="فتح قائمة التنقل"
+          aria-controls="side"
+          aria-expanded="false"
+        >☰</button>
+        <div>
+          <p class="eyebrow">مساحة الموظف الآمنة</p>
+          <h1 id="viewTitle">الرئيسية</h1>
+        </div>
+        <div class="operator" aria-label="الحساب الحالي">
+          <span class="operator__avatar" id="avatar" aria-hidden="true">م</span>
+          <div>
+            <strong id="operatorName">الموظف</strong>
+            <small id="operatorId">…</small>
+          </div>
+        </div>
+      </header>
+
+      <section class="view is-active" data-panel="home" aria-labelledby="viewTitle">
         <div class="employee-grid">
-          <article class="welcome-card"><p class="eyebrow">صباح العمل</p><h2 id="welcomeName">مرحباً بك</h2><p>يمكنك سؤال المساعد عن ملفات الجامعة الداخلية أو بيانات الطلاب الأكاديمية، بينما يظل ملفك المالي خاصاً بك.</p><div class="permission-row"><span>✓ بيانات الطلاب الأكاديمية</span><span>✓ الملفات الداخلية</span><span>✓ بياناتك المالية فقط</span></div></article>
-          <article class="mini-profile"><span class="mini-profile__icon">◇</span><small>القسم</small><strong id="homeDepartment">—</strong><small>المسمى الوظيفي</small><strong id="homeTitle">—</strong><button class="text-btn" data-goto="profile">عرض الملف</button></article>
+          <article class="welcome-card">
+            <p class="eyebrow">مساحة عملك</p>
+            <h2 id="welcomeName">مرحباً بك</h2>
+            <p>يمكنك سؤال المساعد عن ملفات الجامعة الداخلية أو بيانات الطلاب الأكاديمية، بينما يظل ملفك المالي خاصاً بك.</p>
+            <div class="permission-row" aria-label="الصلاحيات المتاحة">
+              <span>✓ بيانات الطلاب الأكاديمية</span>
+              <span>✓ الملفات الداخلية</span>
+              <span>✓ بياناتك المالية فقط</span>
+            </div>
+          </article>
+
+          <article class="mini-profile">
+            <span class="mini-profile__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.7-4.4 3.1-6.5 7-6.5s6.3 2.1 7 6.5"/></svg>
+            </span>
+            <small>القسم</small>
+            <strong id="homeDepartment">—</strong>
+            <small>المسمى الوظيفي</small>
+            <strong id="homeTitle">—</strong>
+            <button class="text-btn" type="button" data-goto="profile">عرض الملف</button>
+          </article>
         </div>
-        <div class="employee-chat panel">
-          <div class="employee-chat__head"><div><p class="eyebrow">مساعد الموظف</p><h3>اسأل ضمن صلاحيات عملك</h3></div><span class="live-dot"></span></div>
-          <div class="employee-chat__messages" id="messages"><div class="emp-msg emp-msg--bot">أهلاً بك. يمكنني مساعدتك في بيانات الطلاب الأكاديمية، تعليمات الجامعة، وملفك الوظيفي الشخصي.</div></div>
-          <div class="employee-chips"><button data-fill="ابحث عن الطالب برقم جامعي ">ابحث عن طالب برقم جامعي…</button><button>ما راتبي المسجل؟</button><button>ما تعليمات القبول الحالية؟</button></div>
-          <form class="employee-composer" id="chatForm"><input id="question" maxlength="2000" placeholder="اكتب سؤالك…" /><button type="submit">إرسال</button></form>
+
+        <section class="employee-chat panel" aria-labelledby="employeeChatTitle">
+          <div class="employee-chat__head">
+            <div>
+              <p class="eyebrow">مساعد الموظف</p>
+              <h3 id="employeeChatTitle">اسأل ضمن صلاحيات عملك</h3>
+            </div>
+            <span class="live-dot" aria-label="الخدمة متصلة"></span>
+          </div>
+
+          <div
+            class="employee-chat__messages"
+            id="messages"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+          >
+            <div class="emp-msg emp-msg--bot">أهلاً بك. يمكنني مساعدتك في بيانات الطلاب الأكاديمية، تعليمات الجامعة، وملفك الوظيفي الشخصي.</div>
+          </div>
+
+          <div class="employee-chips" aria-label="أسئلة مقترحة">
+            <button type="button" data-fill="ابحث عن الطالب برقم جامعي ">ابحث عن طالب برقم جامعي…</button>
+            <button type="button">ما راتبي المسجل؟</button>
+            <button type="button">ما تعليمات القبول الحالية؟</button>
+          </div>
+
+          <form class="employee-composer" id="chatForm">
+            <label class="sr-only" for="question">اكتب سؤالك للمساعد</label>
+            <input id="question" maxlength="2000" autocomplete="off" placeholder="اكتب سؤالك…" />
+            <button type="submit">إرسال</button>
+          </form>
+        </section>
+      </section>
+
+      <section class="view" data-panel="students" aria-labelledby="studentsTitle">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">البيانات الأكاديمية</p>
+            <h2 id="studentsTitle">دليل الطلاب</h2>
+            <p>الاسم والرقم والتخصص والمعدل والترتيب والحالة الأكاديمية فقط.</p>
+          </div>
+        </div>
+
+        <div class="panel table-panel">
+          <div class="filters student-filter">
+            <label class="sr-only" for="studentQuery">البحث في دليل الطلاب</label>
+            <input id="studentQuery" type="search" placeholder="ابحث بالرقم أو الاسم أو التخصص…" />
+            <button class="secondary" id="studentSearch" type="button">بحث</button>
+          </div>
+          <div class="table-wrap" tabindex="0" aria-label="جدول دليل الطلاب">
+            <table>
+              <caption class="sr-only">نتائج البحث في دليل الطلاب</caption>
+              <thead>
+                <tr>
+                  <th scope="col">الطالب</th>
+                  <th scope="col">التخصص</th>
+                  <th scope="col">المعدل</th>
+                  <th scope="col">الترتيب</th>
+                  <th scope="col">الحالة</th>
+                  <th scope="col">آخر تحديث</th>
+                </tr>
+              </thead>
+              <tbody id="studentsBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
-      <section class="view" data-panel="students">
-        <div class="section-head"><div><p class="eyebrow">البيانات الأكاديمية</p><h2>دليل الطلاب</h2><p>الاسم والرقم والتخصص والمعدل والترتيب والحالة الأكاديمية فقط.</p></div></div>
-        <div class="panel table-panel"><div class="filters student-filter"><input id="studentQuery" type="search" placeholder="ابحث بالرقم أو الاسم أو التخصص…" /><button class="secondary" id="studentSearch">بحث</button></div><div class="table-wrap"><table><thead><tr><th>الطالب</th><th>التخصص</th><th>المعدل</th><th>الترتيب</th><th>الحالة</th><th>آخر تحديث</th></tr></thead><tbody id="studentsBody"></tbody></table></div></div>
-      </section>
+      <section class="view" data-panel="profile" aria-labelledby="profileTitleHeading">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">خاص بك فقط</p>
+            <h2 id="profileTitleHeading">ملفي الوظيفي والمالي</h2>
+            <p>لا يستطيع أي موظف آخر رؤية هذا القسم من حسابه.</p>
+          </div>
+        </div>
 
-      <section class="view" data-panel="profile">
-        <div class="section-head"><div><p class="eyebrow">خاص بك فقط</p><h2>ملفي الوظيفي والمالي</h2><p>لا يستطيع أي موظف آخر رؤية هذا القسم من حسابه.</p></div></div>
-        <div class="profile-layout"><article class="profile-card panel"><div class="profile-card__head"><span id="profileAvatar">م</span><div><h3 id="profileName">—</h3><small id="profileId">—</small></div><span class="badge badge--ok">حساب فعّال</span></div><dl><div><dt>القسم</dt><dd id="profileDepartment">—</dd></div><div><dt>المسمى الوظيفي</dt><dd id="profileTitle">—</dd></div><div><dt>آخر تحديث</dt><dd id="profileUpdated">—</dd></div></dl></article><article class="salary-card"><p class="eyebrow">البيانات المالية</p><span>الراتب المسجل</span><strong id="profileSalary">—</strong><small>هذه القيمة تظهر لصاحب الحساب والأدمن فقط.</small></article></div>
+        <div class="profile-layout">
+          <article class="profile-card panel">
+            <div class="profile-card__head">
+              <span id="profileAvatar" aria-hidden="true">م</span>
+              <div>
+                <h3 id="profileName">—</h3>
+                <small id="profileId">—</small>
+              </div>
+              <span class="badge badge--ok">حساب فعّال</span>
+            </div>
+            <dl>
+              <div><dt>القسم</dt><dd id="profileDepartment">—</dd></div>
+              <div><dt>المسمى الوظيفي</dt><dd id="profileTitle">—</dd></div>
+              <div><dt>آخر تحديث</dt><dd id="profileUpdated">—</dd></div>
+            </dl>
+          </article>
+
+          <article class="salary-card">
+            <p class="eyebrow">البيانات المالية</p>
+            <span>الراتب المسجل</span>
+            <strong id="profileSalary">—</strong>
+            <small>هذه القيمة تظهر لصاحب الحساب والأدمن فقط.</small>
+          </article>
+        </div>
       </section>
     </main>
   </div>
-  <div class="toast" id="toast"></div>
-  <script src="employee.js?v=1"></script>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script src="employee.js?v=10"></script>
 </body>
 </html>

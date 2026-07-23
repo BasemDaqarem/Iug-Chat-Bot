@@ -1,0 +1,72 @@
+- generic [ref=e1]:
+  - link "تخطي إلى المحتوى الرئيسي" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - main [ref=e3]:
+    - region [ref=e4]:
+      - complementary "الجامعة الإسلامية بغزة" [ref=e5]:
+        - generic [ref=e6]:
+          - img "شعار الجامعة الإسلامية بغزة" [ref=e8]
+          - paragraph [ref=e9]: منصة جامعية رقمية موثوقة
+          - heading "بوابة المساعد الجامعي" [level=1] [ref=e10]
+          - paragraph [ref=e11]: الجامعة الإسلامية بغزة
+        - paragraph [ref=e12]: بوابتك الذكية للوصول إلى المعلومات الجامعية والخدمات المساندة ضمن تجربة عربية واضحة وآمنة.
+        - list "مزايا البوابة" [ref=e13]:
+          - listitem [ref=e14]: ✓ إجابات مبنية على مصادر الجامعة
+          - listitem [ref=e15]: ✓ وصول مخصص حسب نوع الحساب
+          - listitem [ref=e16]: ✓ واجهة عربية متوافقة مع جميع الأجهزة
+      - region [ref=e17]:
+        - generic [ref=e18]:
+          - paragraph [ref=e19]: الدخول إلى البوابة
+          - heading "أهلاً وسهلاً بك" [level=2] [ref=e20]
+          - paragraph [ref=e21]: أدخل بياناتك للمتابعة إلى المساعد الجامعي.
+        - tablist "نوع الدخول" [ref=e22]:
+          - tab "تسجيل الدخول" [ref=e24] [cursor=pointer]
+          - tab "حساب جديد" [active] [selected] [ref=e25] [cursor=pointer]
+        - generic [ref=e26]:
+          - paragraph [ref=e53]: بيانات أكاديمية تجريبية يضيفها الطالب لاختبار البوت، وليست سجلاً رسمياً من الجامعة.
+          - generic [ref=e54]:
+            - generic [ref=e55]: الاسم
+            - textbox "الاسم" [ref=e59]:
+              - /placeholder: اكتب اسمك الكامل
+          - generic [ref=e60]:
+            - generic [ref=e61]: التخصص
+            - textbox "التخصص" [ref=e65]:
+              - /placeholder: "مثال: هندسة الحاسوب"
+          - generic [ref=e66]:
+            - generic [ref=e67]:
+              - generic [ref=e68]: المعدل من 100
+              - spinbutton "المعدل من 100" [ref=e70]
+            - generic [ref=e71]:
+              - generic [ref=e72]: الترتيب على الدفعة
+              - spinbutton "الترتيب على الدفعة" [ref=e74]
+          - generic [ref=e75]:
+            - generic [ref=e76]: الحالة الأكاديمية
+            - combobox "الحالة الأكاديمية" [ref=e78] [cursor=pointer]:
+              - option "اختر الحالة" [selected]
+              - option "منتظم"
+              - option "ممتاز"
+              - option "جيد"
+              - option "متعثر (في خطر أكاديمي)"
+              - option "تحت إنذار أكاديمي"
+              - option "متخرج"
+          - generic [ref=e27]:
+            - generic [ref=e28]: الرقم الجامعي
+            - textbox "الرقم الجامعي" [ref=e79]:
+              - /placeholder: "مثال: 120210001"
+          - generic [ref=e33]:
+            - generic [ref=e34]: كلمة المرور
+            - generic [ref=e35]:
+              - textbox "كلمة المرور" [ref=e38]:
+                - /placeholder: ••••••••
+              - button "إظهار كلمة المرور" [ref=e39] [cursor=pointer]
+          - status [ref=e42]
+          - button "إنشاء الحساب" [ref=e80] [cursor=pointer]
+        - button "المتابعة كزائر الوصول إلى معلومات الجامعة العامة فقط" [ref=e47] [cursor=pointer]:
+          - generic [ref=e48]: ؟
+          - text: المتابعة كزائر
+          - generic [ref=e49]: الوصول إلى معلومات الجامعة العامة فقط
+        - paragraph [ref=e50]:
+          - generic [ref=e81]:
+            - text: لديك حساب بالفعل؟
+            - link "سجّل الدخول" [ref=e82] [cursor=pointer]:
+              - /url: "#"

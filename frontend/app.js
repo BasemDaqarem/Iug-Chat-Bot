@@ -27,12 +27,13 @@
     label:   $(".submit__label"),
     msg:     $("#formMsg"),
     foots:   document.querySelectorAll("[data-foot]"),
+    registerSections: document.querySelectorAll(".only-register"),
     registerControls: document.querySelectorAll(".only-register input, .only-register select"),
     guest:   $("#guestEntry"),
   };
 
   let mode = "login"; // 'login' | 'register'
-  el.registerControls.forEach((control) => { control.disabled = true; });
+  setRegistrationAvailability(false);
 
   // Show a one-time message handed over from the chat page (e.g. expired token).
   try {
@@ -49,10 +50,16 @@
   function setMode(next) {
     if (next === mode) return;
     mode = next;
-    el.registerControls.forEach((control) => { control.disabled = mode !== "register"; });
-    el.card.classList.toggle("mode-register", mode === "register");
-    el.switch.classList.toggle("is-register", mode === "register");
-    el.opts.forEach((o) => o.classList.toggle("is-active", o.dataset.mode === mode));
+    const isRegister = mode === "register";
+    setRegistrationAvailability(isRegister);
+    el.card.classList.toggle("mode-register", isRegister);
+    el.switch.classList.toggle("is-register", isRegister);
+    el.opts.forEach((o) => {
+      const active = o.dataset.mode === mode;
+      o.classList.toggle("is-active", active);
+      o.setAttribute("aria-selected", String(active));
+      o.tabIndex = active ? 0 : -1;
+    });
     el.label.textContent = COPY[mode].btn;
     el.pass.setAttribute("autocomplete", COPY[mode].pass);
     el.idLabel.textContent = mode === "register" ? "الرقم الجامعي" : "الرقم الجامعي أو الوظيفي";
@@ -62,7 +69,28 @@
     clearErrors();
   }
 
+  function setRegistrationAvailability(available) {
+    el.registerControls.forEach((control) => { control.disabled = !available; });
+    el.registerSections.forEach((section) => {
+      section.inert = !available;
+      section.setAttribute("aria-hidden", String(!available));
+    });
+  }
+
   el.opts.forEach((o) => o.addEventListener("click", () => setMode(o.dataset.mode)));
+  el.switch.addEventListener("keydown", (event) => {
+    if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...el.opts];
+    const current = tabs.indexOf(document.activeElement);
+    let target = current;
+    if (event.key === "Home") target = 0;
+    else if (event.key === "End") target = tabs.length - 1;
+    else if (event.key === "ArrowRight") target = (current - 1 + tabs.length) % tabs.length;
+    else target = (current + 1) % tabs.length;
+    tabs[target].focus();
+    setMode(tabs[target].dataset.mode);
+  });
   document.querySelectorAll("[data-goto]").forEach((a) =>
     a.addEventListener("click", (e) => { e.preventDefault(); setMode(a.dataset.goto); })
   );
@@ -97,12 +125,14 @@
   function setFieldError(input, message) {
     const field = fieldOf(input);
     field.classList.add("has-error");
+    input.setAttribute("aria-invalid", "true");
     const err = field.querySelector(".field__err");
     if (err) err.textContent = message;
   }
   function clearFieldError(input) {
     const field = fieldOf(input);
     field.classList.remove("has-error");
+    input.removeAttribute("aria-invalid");
     const err = field.querySelector(".field__err");
     if (err) err.textContent = "";
   }
@@ -141,6 +171,7 @@
     if (el.pass.value.length < 4) {
       setFieldError(el.pass, "كلمة المرور 4 أحرف على الأقل."); ok = false;
     }
+    if (!ok) el.form.querySelector('[aria-invalid="true"]')?.focus();
     return ok;
   }
 
@@ -148,6 +179,7 @@
   function showMessage(text, kind) {
     el.msg.textContent = text;
     el.msg.className = "form__msg show " + (kind || "");
+    el.msg.setAttribute("aria-live", kind === "err" ? "assertive" : "polite");
   }
   function clearMessage() { el.msg.textContent = ""; el.msg.className = "form__msg"; }
 
@@ -163,6 +195,7 @@
     busy = true;
     el.submit.classList.add("is-loading");
     el.submit.disabled = true;
+    el.form.setAttribute("aria-busy", "true");
 
     const path = mode === "login" ? "/api/auth/login" : "/api/auth/register";
     const payload = { password: el.pass.value };
@@ -191,6 +224,7 @@
       onNetworkError();
     } finally {
       busy = false;
+      el.form.removeAttribute("aria-busy");
     }
   }
 
@@ -262,6 +296,7 @@
   function resetButton() {
     el.submit.classList.remove("is-loading", "is-done");
     el.submit.disabled = false;
+    el.form.removeAttribute("aria-busy");
   }
 
   // ---------- tiny fetch + timing helpers ----------

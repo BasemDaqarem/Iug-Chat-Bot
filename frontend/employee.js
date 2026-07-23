@@ -1,22 +1,259 @@
 (() => {
   "use strict";
-  const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
-  let session; try { session = JSON.parse(sessionStorage.getItem("iug_auth") || "null"); } catch (_) {}
-  if (!session || !session.token || session.role !== "employee") { location.replace("index.html"); return; }
-  const titles = { home:"الرئيسية", students:"دليل الطلاب", profile:"ملفي الوظيفي" };
-  async function api(path, options={}) { const headers = { ...(options.headers||{}), Authorization:`Bearer ${session.token}` }; if (options.body) headers["Content-Type"]="application/json"; const res=await fetch(path,{...options,headers}); let data=null; try{data=await res.json();}catch(_){} if(res.status===401){logout("انتهت صلاحية الجلسة.");throw new Error("unauthorized");} if(!res.ok) throw new Error(data?.error?.message||"تعذّر إتمام الطلب."); return data; }
-  function logout(message="") { sessionStorage.removeItem("iug_auth"); if(message)sessionStorage.setItem("iug_flash",message); location.replace("index.html"); }
-  let timer; function toast(message,error=false){const t=$("#toast");t.textContent=message;t.className=`toast show${error?" error":""}`;clearTimeout(timer);timer=setTimeout(()=>t.className="toast",3000);}
-  function showView(name){$$(".nav-item").forEach(n=>n.classList.toggle("is-active",n.dataset.view===name));$$(".view").forEach(n=>n.classList.toggle("is-active",n.dataset.panel===name));$("#viewTitle").textContent=titles[name];$("#side").classList.remove("is-open");if(name==="students")loadStudents();}
-  $$(".nav-item").forEach(n=>n.addEventListener("click",()=>showView(n.dataset.view)));$$('[data-goto]').forEach(n=>n.addEventListener("click",()=>showView(n.dataset.goto)));$("#menu").addEventListener("click",()=>$("#side").classList.toggle("is-open"));$("#logout").addEventListener("click",()=>logout());
-  function setText(id,value){$(id).textContent=value??"—";}
-  async function loadProfile(){const me=await api("/api/portal/me");const p=me.profile||{};const name=p.name||"الموظف";const initial=name.trim()[0]||"م";setText("#operatorName",name);setText("#operatorId",me.user_id);setText("#avatar",initial);setText("#welcomeName",`مرحباً، ${name.split(" ")[0]}`);setText("#homeDepartment",p.department);setText("#homeTitle",p.job_title);setText("#profileName",name);setText("#profileId",me.user_id);setText("#profileAvatar",initial);setText("#profileDepartment",p.department);setText("#profileTitle",p.job_title);setText("#profileUpdated",p.updated_at?new Date(p.updated_at).toLocaleDateString("ar-EG"):"—");setText("#profileSalary",p.salary==null?"غير مسجل":`${new Intl.NumberFormat("ar-JO",{maximumFractionDigits:2}).format(p.salary)} دينار أردني`);}
-  function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n;}
-  async function loadStudents(){const body=$("#studentsBody");body.replaceChildren();const empty=node("tr");const wait=node("td","empty","جارٍ تحميل الدليل…");wait.colSpan=6;empty.append(wait);body.append(empty);try{const q=encodeURIComponent($("#studentQuery").value.trim());const data=await api(`/api/portal/students?query=${q}&limit=50`);body.replaceChildren();if(!data.students?.length){const tr=node("tr");const td=node("td","empty","لا توجد نتائج مطابقة.");td.colSpan=6;tr.append(td);body.append(tr);return;}data.students.forEach(s=>{const tr=node("tr");const title=node("div","student-name");title.append(node("strong","",s.name||"طالب"),node("small","",s.student_id));const values=[title,s.major,s.gpa??"—",s.rank??"—",s.academic_status||"—",s.updated_at?new Date(s.updated_at).toLocaleDateString("ar-EG"):"—"];values.forEach(v=>{const td=node("td");if(v instanceof Node)td.append(v);else td.textContent=v;tr.append(td);});body.append(tr);});}catch(err){toast(err.message,true);}}
-  $("#studentSearch").addEventListener("click",loadStudents);$("#studentQuery").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();loadStudents();}});
-  function message(text,who){const m=node("div",`emp-msg emp-msg--${who}`,text);$("#messages").append(m);$("#messages").scrollTop=$("#messages").scrollHeight;return m;}
-  let busy=false;async function ask(question){question=question.trim();if(!question||busy)return;busy=true;const input=$("#question"),button=$("#chatForm button");button.disabled=true;message(question,"me");input.value="";const pending=message("يفكر المساعد…","bot");try{const data=await api("/api/chat",{method:"POST",body:JSON.stringify({question})});pending.textContent=data.answer||"لا تتوفر إجابة.";}catch(err){pending.className="emp-msg emp-msg--error";pending.textContent=`⚠ ${err.message}`;}finally{busy=false;button.disabled=false;input.focus();}}
-  // شريحة تحمل data-fill تُكمل نصها في الحقل (تنتظر الرقم/الاسم) بدل إرسال سؤال ناقص.
-  $("#chatForm").addEventListener("submit",e=>{e.preventDefault();ask($("#question").value);});$$(".employee-chips button").forEach(b=>b.addEventListener("click",()=>{const fill=b.dataset.fill;if(fill){const input=$("#question");input.value=fill;input.focus();input.setSelectionRange(fill.length,fill.length);}else ask(b.textContent);}));
-  loadProfile().catch(err=>toast(err.message,true));
+
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+  let session;
+  try {
+    session = JSON.parse(sessionStorage.getItem("iug_auth") || "null");
+  } catch (_) {}
+
+  if (!session || !session.token || session.role !== "employee") {
+    location.replace("index.html");
+    return;
+  }
+
+  const titles = {
+    home: "الرئيسية",
+    students: "دليل الطلاب",
+    profile: "ملفي الوظيفي",
+  };
+
+  async function api(path, options = {}) {
+    const headers = {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${session.token}`,
+    };
+    if (options.body) headers["Content-Type"] = "application/json";
+    const response = await fetch(path, { ...options, headers });
+    let data = null;
+    try { data = await response.json(); } catch (_) {}
+    if (response.status === 401) {
+      logout("انتهت صلاحية الجلسة.");
+      throw new Error("unauthorized");
+    }
+    if (!response.ok) {
+      throw new Error(data?.error?.message || "تعذّر إتمام الطلب.");
+    }
+    return data;
+  }
+
+  function logout(message = "") {
+    sessionStorage.removeItem("iug_auth");
+    if (message) sessionStorage.setItem("iug_flash", message);
+    location.replace("index.html");
+  }
+
+  let toastTimer;
+  function toast(message, error = false) {
+    const target = $("#toast");
+    target.textContent = message;
+    target.className = `toast show${error ? " error" : ""}`;
+    target.setAttribute("aria-live", error ? "assertive" : "polite");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { target.className = "toast"; }, 3000);
+  }
+
+  const side = $("#side");
+  const menu = $("#menu");
+  const sideBackdrop = $("#sideBackdrop");
+
+  function setMenu(open) {
+    side.classList.toggle("is-open", open);
+    sideBackdrop.classList.toggle("is-open", open);
+    menu.setAttribute("aria-expanded", String(open));
+    sideBackdrop.tabIndex = open ? 0 : -1;
+  }
+
+  function showView(name) {
+    $$(".nav-item").forEach((item) => {
+      const active = item.dataset.view === name;
+      item.classList.toggle("is-active", active);
+      if (active) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
+    });
+    $$(".view").forEach((panel) => {
+      panel.classList.toggle("is-active", panel.dataset.panel === name);
+    });
+    $("#viewTitle").textContent = titles[name];
+    setMenu(false);
+    if (name === "students") loadStudents();
+  }
+
+  $$(".nav-item").forEach((item) => {
+    item.addEventListener("click", () => showView(item.dataset.view));
+  });
+  $$("[data-goto]").forEach((item) => {
+    item.addEventListener("click", () => showView(item.dataset.goto));
+  });
+  menu.addEventListener("click", () => setMenu(!side.classList.contains("is-open")));
+  sideBackdrop.addEventListener("click", () => setMenu(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && side.classList.contains("is-open")) {
+      setMenu(false);
+      menu.focus();
+    }
+  });
+  $("#logout").addEventListener("click", () => logout());
+
+  function setText(selector, value) {
+    $(selector).textContent = value ?? "—";
+  }
+
+  async function loadProfile() {
+    const me = await api("/api/portal/me");
+    const profile = me.profile || {};
+    const name = profile.name || "الموظف";
+    const initial = name.trim()[0] || "م";
+
+    setText("#operatorName", name);
+    setText("#operatorId", me.user_id);
+    setText("#avatar", initial);
+    setText("#welcomeName", `مرحباً، ${name.split(" ")[0]}`);
+    setText("#homeDepartment", profile.department);
+    setText("#homeTitle", profile.job_title);
+    setText("#profileName", name);
+    setText("#profileId", me.user_id);
+    setText("#profileAvatar", initial);
+    setText("#profileDepartment", profile.department);
+    setText("#profileTitle", profile.job_title);
+    setText(
+      "#profileUpdated",
+      profile.updated_at ? new Date(profile.updated_at).toLocaleDateString("ar-EG") : "—",
+    );
+    setText(
+      "#profileSalary",
+      profile.salary == null
+        ? "غير مسجل"
+        : `${new Intl.NumberFormat("ar-JO", { maximumFractionDigits: 2 }).format(profile.salary)} دينار أردني`,
+    );
+  }
+
+  function node(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text != null) element.textContent = text;
+    return element;
+  }
+
+  function renderTableMessage(text) {
+    const row = node("tr");
+    const cell = node("td", "empty", text);
+    cell.colSpan = 6;
+    row.append(cell);
+    return row;
+  }
+
+  async function loadStudents() {
+    const body = $("#studentsBody");
+    body.replaceChildren(renderTableMessage("جارٍ تحميل الدليل…"));
+    body.setAttribute("aria-busy", "true");
+
+    try {
+      const query = encodeURIComponent($("#studentQuery").value.trim());
+      const data = await api(`/api/portal/students?query=${query}&limit=50`);
+      body.replaceChildren();
+      if (!data.students?.length) {
+        body.append(renderTableMessage("لا توجد نتائج مطابقة."));
+        return;
+      }
+
+      data.students.forEach((student) => {
+        const row = node("tr");
+        const title = node("div", "student-name");
+        title.append(
+          node("strong", "", student.name || "طالب"),
+          node("small", "", student.student_id),
+        );
+        const values = [
+          title,
+          student.major,
+          student.gpa ?? "—",
+          student.rank ?? "—",
+          student.academic_status || "—",
+          student.updated_at
+            ? new Date(student.updated_at).toLocaleDateString("ar-EG")
+            : "—",
+        ];
+        values.forEach((value) => {
+          const cell = node("td");
+          if (value instanceof Node) cell.append(value);
+          else cell.textContent = value;
+          row.append(cell);
+        });
+        body.append(row);
+      });
+    } catch (error) {
+      body.replaceChildren(renderTableMessage("تعذّر تحميل دليل الطلاب."));
+      toast(error.message, true);
+    } finally {
+      body.removeAttribute("aria-busy");
+    }
+  }
+
+  $("#studentSearch").addEventListener("click", loadStudents);
+  $("#studentQuery").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loadStudents();
+    }
+  });
+
+  function message(text, author) {
+    const item = node("div", `emp-msg emp-msg--${author}`, text);
+    $("#messages").append(item);
+    $("#messages").scrollTop = $("#messages").scrollHeight;
+    return item;
+  }
+
+  let busy = false;
+  async function ask(rawQuestion) {
+    const question = rawQuestion.trim();
+    if (!question || busy) return;
+
+    busy = true;
+    const input = $("#question");
+    const button = $("#chatForm button");
+    button.disabled = true;
+    message(question, "me");
+    input.value = "";
+    const pending = message("يفكر المساعد…", "bot");
+
+    try {
+      const data = await api("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ question }),
+      });
+      pending.textContent = data.answer || "لا تتوفر إجابة.";
+    } catch (error) {
+      pending.className = "emp-msg emp-msg--error";
+      pending.textContent = `تنبيه: ${error.message}`;
+    } finally {
+      busy = false;
+      button.disabled = false;
+      input.focus();
+    }
+  }
+
+  $("#chatForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    ask($("#question").value);
+  });
+
+  $$(".employee-chips button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const fill = button.dataset.fill;
+      if (fill) {
+        const input = $("#question");
+        input.value = fill;
+        input.focus();
+        input.setSelectionRange(fill.length, fill.length);
+      } else {
+        ask(button.textContent);
+      }
+    });
+  });
+
+  loadProfile().catch((error) => toast(error.message, true));
 })();

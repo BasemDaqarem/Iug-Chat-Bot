@@ -52,28 +52,116 @@
   }
   function endSession(message = "") { sessionStorage.removeItem("iug_auth"); sessionStorage.setItem("iug_flash", message); location.replace("index.html"); }
   let toastTimer;
-  function toast(message, error = false) { const el = $("#toast"); el.textContent = message; el.className = `toast show${error ? " error" : ""}`; clearTimeout(toastTimer); toastTimer = setTimeout(() => el.className = "toast", 3200); }
+  function toast(message, error = false) {
+    const el = $("#toast");
+    el.textContent = message;
+    el.className = `toast show${error ? " error" : ""}`;
+    el.setAttribute("aria-live", error ? "assertive" : "polite");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = "toast"; }, 3200);
+  }
   function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; }
   function cell(content) { const node = el("td"); if (content instanceof Node) node.append(content); else node.textContent = content ?? "—"; return node; }
   function action(label, name, id, danger = false) { const b = el("button", `action${danger ? " danger" : ""}`, label); b.dataset.action = name; b.dataset.id = id; return b; }
   function statusBadge(status, active = true) { const cls = !active ? "badge--off" : status === "published" || status === "active" ? "badge--ok" : "badge--warn"; return el("span", `badge ${cls}`, !active ? "موقوف" : (statusNames[status] || "فعّال")); }
 
+  const side = $("#side");
+  const menu = $("#menu");
+  const sideBackdrop = $("#sideBackdrop");
+
+  function setMenu(open) {
+    side.classList.toggle("is-open", open);
+    sideBackdrop.classList.toggle("is-open", open);
+    menu.setAttribute("aria-expanded", String(open));
+    sideBackdrop.tabIndex = open ? 0 : -1;
+  }
+
   function showView(name) {
-    $$(".nav-item").forEach(n => n.classList.toggle("is-active", n.dataset.view === name));
+    $$(".nav-item").forEach(n => {
+      const active = n.dataset.view === name;
+      n.classList.toggle("is-active", active);
+      if (active) n.setAttribute("aria-current", "page");
+      else n.removeAttribute("aria-current");
+    });
     $$(".view").forEach(n => n.classList.toggle("is-active", n.dataset.panel === name));
-    $("#viewTitle").textContent = titles[name]; $("#side").classList.remove("is-open");
+    $("#viewTitle").textContent = titles[name];
+    setMenu(false);
     if (name === "audit") loadAudit();
   }
   $$(".nav-item").forEach(n => n.addEventListener("click", () => showView(n.dataset.view)));
   $$('[data-goto]').forEach(n => n.addEventListener("click", () => showView(n.dataset.goto)));
-  $("#menu").addEventListener("click", () => $("#side").classList.toggle("is-open"));
+  menu.addEventListener("click", () => setMenu(!side.classList.contains("is-open")));
+  sideBackdrop.addEventListener("click", () => setMenu(false));
   $("#logout").addEventListener("click", () => endSession());
 
-  function openModal(id) { const m = $("#" + id); m.classList.add("is-open"); m.setAttribute("aria-hidden", "false"); }
-  function closeModal(m) { m.classList.remove("is-open"); m.setAttribute("aria-hidden", "true"); }
+  const focusableSelector = [
+    "button:not([disabled])",
+    "a[href]",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(",");
+  let lastFocused = null;
+
+  function openModal(id) {
+    const modal = $("#" + id);
+    lastFocused = document.activeElement;
+    modal.inert = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+    $(".portal-shell").inert = true;
+    document.body.classList.add("modal-open");
+    requestAnimationFrame(() => {
+      ($(focusableSelector, modal) || $(".modal__card", modal)).focus();
+    });
+  }
+
+  function closeModal(modal) {
+    modal.classList.remove("is-open");
+    modal.setAttribute("aria-hidden", "true");
+    modal.inert = true;
+    $(".portal-shell").inert = false;
+    document.body.classList.remove("modal-open");
+    if (lastFocused && document.contains(lastFocused)) lastFocused.focus();
+    lastFocused = null;
+  }
+
   $$('[data-open]').forEach(n => n.addEventListener("click", () => openModal(n.dataset.open)));
   $$('[data-close]').forEach(n => n.addEventListener("click", () => closeModal(n.closest(".modal"))));
   $$(".modal").forEach(m => m.addEventListener("click", e => { if (e.target === m) closeModal(m); }));
+  document.addEventListener("keydown", event => {
+    const modal = $(".modal.is-open");
+    if (modal) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal(modal);
+        return;
+      }
+      if (event.key === "Tab") {
+        const items = $$(focusableSelector, modal);
+        if (!items.length) {
+          event.preventDefault();
+          $(".modal__card", modal).focus();
+          return;
+        }
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+      return;
+    }
+    if (event.key === "Escape" && side.classList.contains("is-open")) {
+      setMenu(false);
+      menu.focus();
+    }
+  });
 
   async function loadIdentity() {
     const me = await api("/api/auth/me");
