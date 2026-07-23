@@ -2200,183 +2200,191 @@ class IUGChatbot:
                     names &= set(allowed_collections)
                 focus = {n for n in names
                          if "قبول" in normalize_arabic(n) or "معدلات" in normalize_arabic(n)}
-                if focus:
-                    all_focused = []
-                    for name in sorted(focus):
-                        all_focused.extend(self._uploaded.chunks_of(name))
-                    focused = list(all_focused)
-                    if len(focused) > config.ADMISSION_TABLE_MAX_CHUNKS:
-                        focused = self._uploaded.search_all(
-                            search_question, config.ADMISSION_TABLE_MAX_CHUNKS,
-                            allowed_collections=focus,
-                        )
-                    else:
-                        admission_table = True
-                    # المقاطع الخام تخلط الرسوم بالمفاتيح في القراءة (ثبت حياً:
-                    # سعر ساعة الآداب 20 ديناراً قُرئ «مفتاح 20%») — نُصدّر
-                    # المفاتيح الرقمية كسطور مستخلصة آلياً لا لبس فيها، وتبقى
-                    # الخام للمفاتيح النصية (الطب «تنافسية») والرسوم.
-                    specific_admission_entities = list(dict.fromkeys(
-                        claim.entity
-                        for claim in plan.claims
-                        if claim.entity
-                        and claim.canonical_field in {
-                            "fee", "branch", "admission_cutoff"
-                        }
-                    ))
-                    targeted_digest = bool(
-                        specific_admission_entities
-                        and not complete_list_requested
-                        and not plan.is_list_question
+                # سحب الجدول الكامل وحده يبقى مشروطاً باسم الملف (سلوك الملفات
+                # القديمة الاختياري)؛ أما المستخلص الرقمي أدناه فمصدره الكتالوج
+                # المنظم نفسه لا أسماء الملفات — كان متداخلاً داخل if focus:
+                # فيموت بصمت حين لا يطابق أي اسم، وملفات iug_kb_v2 أسماؤها
+                # إنجليزية (academic_programs) فلا تطابق أبداً.
+                all_focused = []
+                for name in sorted(focus):
+                    all_focused.extend(self._uploaded.chunks_of(name))
+                focused = list(all_focused)
+                if focused and len(focused) > config.ADMISSION_TABLE_MAX_CHUNKS:
+                    focused = self._uploaded.search_all(
+                        search_question, config.ADMISSION_TABLE_MAX_CHUNKS,
+                        allowed_collections=focus,
                     )
-                    # A student's rate is an upper filter only for discovery
-                    # questions ("what can accept me?").  Applying it to a
-                    # named-program eligibility question hides the very cutoff
-                    # that must be compared when the student does *not* qualify.
-                    digest = self._uploaded.admission_context_lines(
-                        None if allowed_collections is None
-                        else set(allowed_collections),
-                        branch=(
-                            None if targeted_digest
-                            else active_constraints.get("branch")
-                        ),
-                        max_percentage=(
-                            None if targeted_digest
-                            else active_constraints.get("rate")
-                        ),
-                    )
+                elif focused:
+                    admission_table = True
+                # المقاطع الخام تخلط الرسوم بالمفاتيح في القراءة (ثبت حياً:
+                # سعر ساعة الآداب 20 ديناراً قُرئ «مفتاح 20%») — نُصدّر
+                # المفاتيح الرقمية كسطور مستخلصة آلياً لا لبس فيها، وتبقى
+                # الخام للمفاتيح النصية (الطب «تنافسية») والرسوم.
+                specific_admission_entities = list(dict.fromkeys(
+                    claim.entity
+                    for claim in plan.claims
+                    if claim.entity
+                    and claim.canonical_field in {
+                        "fee", "branch", "admission_cutoff"
+                    }
+                ))
+                targeted_digest = bool(
+                    specific_admission_entities
+                    and not complete_list_requested
+                    and not plan.is_list_question
+                )
+                # A student's rate is an upper filter only for discovery
+                # questions ("what can accept me?").  Applying it to a
+                # named-program eligibility question hides the very cutoff
+                # that must be compared when the student does *not* qualify.
+                digest = self._uploaded.admission_context_lines(
+                    None if allowed_collections is None
+                    else set(allowed_collections),
+                    branch=(
+                        None if targeted_digest
+                        else active_constraints.get("branch")
+                    ),
+                    max_percentage=(
+                        None if targeted_digest
+                        else active_constraints.get("rate")
+                    ),
+                )
 
-                    def _matches_specific_entity(value: str) -> bool:
-                        normalized_value = normalize_arabic(value)
-                        for entity in specific_admission_entities:
-                            terms = []
-                            for token in normalize_arabic(entity).split():
-                                if token.startswith("ال") and len(token) > 4:
-                                    token = token[2:]
-                                if len(token) >= 3:
-                                    terms.append(token)
-                            if terms and all(
-                                term in normalized_value for term in terms
-                            ):
-                                return True
-                        return False
-
-                    if digest and targeted_digest:
-                        headers = [line for line in digest if line.startswith("[")]
-                        matching_lines = [
-                            line for line in digest
-                            if not line.startswith("[")
-                            and _matches_specific_entity(line)
-                        ]
-                        digest = [*headers, *matching_lines]
-                        if not digest:
-                            digest = [
-                                "[لا يوجد مفتاح رقمي مطابق للبرنامج؛ "
-                                "استخدم الشرط النصي من دليله الخام]"
-                            ]
-                    if digest:
-                        admission_digest = True
-                        if not targeted_digest:
-                            for line in digest:
-                                if line.startswith("[") or "|" not in line:
-                                    continue
-                                faculty = line.split("|", 1)[0].strip()
-                                if faculty and faculty not in admission_faculties:
-                                    admission_faculties.append(faculty)
-                        digest_chunk = (
-                            (
-                                "دليل مفتاح القبول المرتبط بالبرنامج المطلوب "
-                                "(مستخلص آلياً من ملفات الجامعة):\n"
-                                if targeted_digest
-                                else "جدول مفاتيح القبول (مستخلص آلياً من ملفات الجامعة):\n"
-                            )
-                            + "\n".join(dict.fromkeys(digest))
-                        )
-                        # النسخة المنظمة تحمل كل الأرقام والفروع بلا رسوم.
-                        # لا نكرر معها عشرات المقاطع الخام نفسها؛ نحتفظ فقط
-                        # بالسجلات ذات الشرط النصي غير الرقمي (مثل «تنافسية»)
-                        # وبالمقاطع الأخرى التي استرجعها السؤال المركب.
-                        textual_markers = (
-                            "تنافسي", "تنافسيه", "غير رقمي",
-                            "لا يوجد معدل ثابت", "حسب المنافسه",
-                        )
-                        textual_support = [
-                            chunk for chunk in focused
-                            if any(
-                                marker in normalize_arabic(chunk)
-                                for marker in textual_markers
-                            )
-                        ]
-                        if targeted_digest:
-                            textual_support = [
-                                chunk for chunk in textual_support
-                                if _matches_specific_entity(chunk)
-                            ]
-                        active_branch = active_constraints.get("branch")
-                        if (
-                            active_branch is not None
-                            and normalize_arabic(active_branch) != "علمي"
+                def _matches_specific_entity(value: str) -> bool:
+                    normalized_value = normalize_arabic(value)
+                    for entity in specific_admission_entities:
+                        terms = []
+                        for token in normalize_arabic(entity).split():
+                            if token.startswith("ال") and len(token) > 4:
+                                token = token[2:]
+                            if len(token) >= 3:
+                                terms.append(token)
+                        if terms and all(
+                            term in normalized_value for term in terms
                         ):
-                            # الشرط النصي المتاح حالياً هو طب/علمي؛ لا نحقنه
-                            # في سؤال أدبي فيعيد جذب النموذج إلى الفرع القديم.
-                            textual_support = []
-                        focused_set = set(all_focused)
-                        list_from_digest = (
-                            query_rewrite.has_admission_intent(base_question)
-                            or complete_list_requested
-                            or query_rewrite.wants_academic_programs(base_question)
+                            return True
+                    return False
+
+                if digest and targeted_digest:
+                    headers = [line for line in digest if line.startswith("[")]
+                    matching_lines = [
+                        line for line in digest
+                        if not line.startswith("[")
+                        and _matches_specific_entity(line)
+                    ]
+                    digest = [*headers, *matching_lines]
+                    if not digest:
+                        digest = [
+                            "[لا يوجد مفتاح رقمي مطابق للبرنامج؛ "
+                            "استخدم الشرط النصي من دليله الخام]"
+                        ]
+                if digest:
+                    admission_digest = True
+                    if not targeted_digest:
+                        for line in digest:
+                            if line.startswith("[") or "|" not in line:
+                                continue
+                            faculty = line.split("|", 1)[0].strip()
+                            if faculty and faculty not in admission_faculties:
+                                admission_faculties.append(faculty)
+                    digest_chunk = (
+                        (
+                            "دليل مفتاح القبول المرتبط بالبرنامج المطلوب "
+                            "(مستخلص آلياً من ملفات الجامعة):\n"
+                            if targeted_digest
+                            else "جدول مفاتيح القبول (مستخلص آلياً من ملفات الجامعة):\n"
                         )
-                        other_evidence = (
-                            [
-                                chunk for chunk in relevant_chunks
-                                if chunk not in focused_set
-                            ]
-                            if (
-                                not list_from_digest
-                                or query_rewrite.is_multi_part_question(question)
-                            )
-                            else []
-                        )
-                        # The admissions digest intentionally contains no
-                        # tuition values.  For compound questions such as
-                        # "price + admission cutoff", keep the already
-                        # retrieved, entity-matching raw fee record even when
-                        # it comes from the same admissions/fees collection.
-                        focused_fee_evidence = []
+                        + "\n".join(dict.fromkeys(digest))
+                    )
+                    # النسخة المنظمة تحمل كل الأرقام والفروع بلا رسوم.
+                    # لا نكرر معها عشرات المقاطع الخام نفسها؛ نحتفظ فقط
+                    # بالسجلات ذات الشرط النصي غير الرقمي (مثل «تنافسية»)
+                    # وبالمقاطع الأخرى التي استرجعها السؤال المركب.
+                    # (بلا ملفات مسماة «قبول» يُلتمس الدعم النصي من نتائج
+                    # الاسترجاع نفسها — مسار v2.)
+                    textual_markers = (
+                        "تنافسي", "تنافسيه", "غير رقمي",
+                        "لا يوجد معدل ثابت", "حسب المنافسه",
+                    )
+                    textual_support = [
+                        chunk for chunk in (focused or relevant_chunks)
                         if any(
-                            claim.canonical_field == "fee"
-                            for claim in plan.claims
-                        ):
-                            focused_fee_evidence = [
-                                chunk for chunk in relevant_chunks
-                                if (
-                                    chunk in focused_set
-                                    and _matches_specific_entity(chunk)
-                                    and any(
-                                        marker in normalize_arabic(chunk)
-                                        for marker in (
-                                            "credit_hour_fee", "سعر الساعه",
-                                            "رسوم الساعه", "دينار",
-                                        )
+                            marker in normalize_arabic(chunk)
+                            for marker in textual_markers
+                        )
+                    ]
+                    if targeted_digest:
+                        textual_support = [
+                            chunk for chunk in textual_support
+                            if _matches_specific_entity(chunk)
+                        ]
+                    active_branch = active_constraints.get("branch")
+                    if (
+                        active_branch is not None
+                        and normalize_arabic(active_branch) != "علمي"
+                    ):
+                        # الشرط النصي المتاح حالياً هو طب/علمي؛ لا نحقنه
+                        # في سؤال أدبي فيعيد جذب النموذج إلى الفرع القديم.
+                        textual_support = []
+                    focused_set = set(all_focused)
+                    list_from_digest = (
+                        query_rewrite.has_admission_intent(base_question)
+                        or complete_list_requested
+                        or query_rewrite.wants_academic_programs(base_question)
+                    )
+                    other_evidence = (
+                        [
+                            chunk for chunk in relevant_chunks
+                            if chunk not in focused_set
+                        ]
+                        if (
+                            not list_from_digest
+                            or query_rewrite.is_multi_part_question(question)
+                        )
+                        else []
+                    )
+                    # The admissions digest intentionally contains no
+                    # tuition values.  For compound questions such as
+                    # "price + admission cutoff", keep the already
+                    # retrieved, entity-matching raw fee record even when
+                    # it comes from the same admissions/fees collection.
+                    # (With no name-focused files — the v2 path — every
+                    # retrieved chunk is eligible fee evidence.)
+                    focused_fee_evidence = []
+                    if any(
+                        claim.canonical_field == "fee"
+                        for claim in plan.claims
+                    ):
+                        focused_fee_evidence = [
+                            chunk for chunk in relevant_chunks
+                            if (
+                                (chunk in focused_set or not focused_set)
+                                and _matches_specific_entity(chunk)
+                                and any(
+                                    marker in normalize_arabic(chunk)
+                                    for marker in (
+                                        "credit_hour_fee", "سعر الساعه",
+                                        "رسوم الساعه", "دينار",
                                     )
                                 )
-                            ]
-                        relevant_chunks = (
-                            [digest_chunk]
-                            + list(dict.fromkeys(textual_support))
-                            + list(dict.fromkeys(focused_fee_evidence))
-                            + other_evidence
-                        )
-                    else:
-                        # When a large admission collection is bounded to a
-                        # handful of focused hits, remove the rest of that
-                        # same collection from the general retrieval window;
-                        # otherwise it silently defeats the configured cap.
-                        seen = set(all_focused)
-                        relevant_chunks = (
-                            focused
-                            + [c for c in relevant_chunks if c not in seen]
-                        )
+                            )
+                        ]
+                    relevant_chunks = (
+                        [digest_chunk]
+                        + list(dict.fromkeys(textual_support))
+                        + list(dict.fromkeys(focused_fee_evidence))
+                        + other_evidence
+                    )
+                elif focused:
+                    # When a large admission collection is bounded to a
+                    # handful of focused hits, remove the rest of that
+                    # same collection from the general retrieval window;
+                    # otherwise it silently defeats the configured cap.
+                    seen = set(all_focused)
+                    relevant_chunks = (
+                        focused
+                        + [c for c in relevant_chunks if c not in seen]
+                    )
 
         # ── وعي المرحلة الأكاديمية ──
         # سجلات رسوم الدراسات العليا (65 سجلاً غنياً بكلمات «برامج/تخصصات»)
@@ -2389,6 +2397,11 @@ class IUGChatbot:
                        or query_rewrite.detect_degree_level(search_question))
 
         def _chunk_level(chunk: str) -> str | None:
+            # مسار iug_kb_v2 أولاً: الملف الواحد يخلط البكالوريوس بالدراسات
+            # العليا فلا يصلح اسمه دليلاً — المرحلة تُقرأ من metadata السجل.
+            level = self._uploaded.degree_level_of(chunk)
+            if level in ("bachelor", "masters", "phd"):
+                return level
             if chunk.startswith("[ملف: "):
                 return query_rewrite.file_degree_level(chunk[6:chunk.find("]")])
             return None

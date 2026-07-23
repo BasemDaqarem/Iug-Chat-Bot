@@ -231,6 +231,9 @@ LLM_SEED = int(_LLM_SEED_RAW) if _LLM_SEED_RAW else None
 # تحتاج تفكيراً مفتوحاً؛ minimal يقلل زمن/توكنات التفكير ويحفظ ميزانية النص.
 LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "minimal")
 EMBED_BATCH_SIZE = 64
+# ميزانية توكنات التضمين بالدقيقة (حدّ Jina المجاني 100 ألف/دقيقة — نبقى
+# تحته بهامش). 0 = تعطيل الكبح. ثبت حياً: ملف 520 مقطعاً بلا كبح = 429 حتمي.
+EMBED_TPM_BUDGET = int(os.getenv("EMBED_TPM_BUDGET", "80000"))
 HISTORY_TURNS_IN_PROMPT = 6
 
 # Collections that must NEVER be indexed as RAG content. Auth/identity/PII
