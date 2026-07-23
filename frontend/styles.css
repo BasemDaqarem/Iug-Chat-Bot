@@ -1,35 +1,31 @@
 /* ============================================================
    Islamic University of Gaza — shared visual identity
-   Primary palette sampled from the supplied blue swatch:
-   blue #0076DF, deep blue #0067C3, pale blue #E6F2FC.
+   Source palette sampled from the supplied university logo:
+   green #307050, blue #138DC7, mint #A1DACC.
    ============================================================ */
 :root {
   color-scheme: light;
-  /*
-   * Historical token names are retained for component compatibility.
-   * Their values now use the requested blue identity.
-   */
-  --brand-green-source: #0076df;
-  --brand-green: #0076df;
-  --brand-green-hover: #0067c3;
-  --brand-green-active: #00539f;
-  --brand-blue-source: #0076df;
-  --brand-blue: #0067c3;
-  --brand-blue-soft: #e6f2fc;
-  --brand-mint-source: #a6cff4;
-  --brand-mint: #e6f2fc;
-  --brand-mint-soft: #f3f8fd;
+  --brand-green-source: #307050;
+  --brand-green: #2f6f50;
+  --brand-green-hover: #255d43;
+  --brand-green-active: #1b4733;
+  --brand-blue-source: #138dc7;
+  --brand-blue: #0d6f9d;
+  --brand-blue-soft: #e6f4fa;
+  --brand-mint-source: #a1dacc;
+  --brand-mint: #dff3ec;
+  --brand-mint-soft: #f0f9f5;
 
-  --background: #f3f7fb;
+  --background: #f3f7f5;
   --surface: #ffffff;
-  --surface-subtle: #f7faff;
-  --surface-strong: #eaf2f9;
-  --text: #142333;
-  --text-muted: #5b6f82;
-  --text-soft: #8191a0;
-  --border: #d5e2ee;
-  --border-strong: #b9ccdc;
-  --focus: #005db2;
+  --surface-subtle: #f8fbf9;
+  --surface-strong: #edf4f0;
+  --text: #15251e;
+  --text-muted: #607169;
+  --text-soft: #819088;
+  --border: #d8e4de;
+  --border-strong: #b9cec4;
+  --focus: #0d73a4;
   --success: #157347;
   --success-soft: #e5f5ec;
   --warning: #9a5b00;
@@ -41,9 +37,9 @@
   --radius-lg: 20px;
   --radius-md: 14px;
   --radius-sm: 10px;
-  --shadow-sm: 0 8px 24px rgba(0, 74, 140, 0.07);
-  --shadow-md: 0 22px 60px rgba(0, 65, 122, 0.13);
-  --shadow-focus: 0 0 0 4px rgba(0, 118, 223, 0.18);
+  --shadow-sm: 0 8px 24px rgba(28, 72, 51, 0.07);
+  --shadow-md: 0 22px 60px rgba(25, 63, 46, 0.13);
+  --shadow-focus: 0 0 0 4px rgba(19, 141, 199, 0.18);
   --ease: cubic-bezier(.22, .61, .36, 1);
   --font: "Noto Kufi Arabic", "Tajawal", "Cairo", "Segoe UI", Tahoma, Arial, sans-serif;
 
@@ -81,7 +77,7 @@ body {
   overflow-x: hidden;
   color: var(--text);
   background:
-    linear-gradient(180deg, rgba(0, 118, 223, .035), transparent 28rem),
+    linear-gradient(180deg, rgba(47, 111, 80, .035), transparent 28rem),
     var(--background);
   font-family: var(--font);
   line-height: 1.6;
@@ -160,8 +156,8 @@ textarea:focus-visible,
   inset: 0;
   opacity: .38;
   background-image:
-    linear-gradient(rgba(0, 118, 223, .035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 118, 223, .035) 1px, transparent 1px);
+    linear-gradient(rgba(47, 111, 80, .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(47, 111, 80, .035) 1px, transparent 1px);
   background-size: 42px 42px;
   mask-image: linear-gradient(to bottom, #000, transparent 72%);
 }
@@ -254,7 +250,7 @@ textarea:focus-visible,
   color: #fff;
   background:
     radial-gradient(circle at 12% 88%, rgba(161, 218, 204, .25), transparent 34%),
-    linear-gradient(145deg, #006fd2, var(--brand-green) 52%, var(--brand-green-active));
+    linear-gradient(145deg, #367657, var(--brand-green) 52%, var(--brand-green-active));
 }
 
 .brand-panel::before,
@@ -428,7 +424,7 @@ textarea:focus-visible,
   width: calc(50% - 5px);
   background: var(--brand-green);
   border-radius: 10px;
-  box-shadow: 0 8px 18px rgba(0, 118, 223, .2);
+  box-shadow: 0 8px 18px rgba(47, 111, 80, .2);
   transition: transform .35s var(--ease);
 }
 
@@ -554,7 +550,7 @@ textarea:focus-visible,
 
 .field__eye:hover,
 .field__eye.is-on {
-  color: var(--brand-green-active);
+  color: var(--brand-green);
   background: var(--brand-mint-soft);
 }
 
@@ -680,7 +676,7 @@ textarea:focus-visible,
   background: var(--brand-green);
   border: 0;
   border-radius: var(--radius-md);
-  box-shadow: 0 12px 24px rgba(0, 118, 223, .18);
+  box-shadow: 0 12px 24px rgba(47, 111, 80, .18);
   cursor: pointer;
   font-size: 15px;
   font-weight: 900;
@@ -689,7 +685,7 @@ textarea:focus-visible,
 
 .submit:hover:not(:disabled) {
   background: var(--brand-green-hover);
-  box-shadow: 0 16px 30px rgba(0, 118, 223, .25);
+  box-shadow: 0 16px 30px rgba(47, 111, 80, .25);
   transform: translateY(-1px);
 }
 

@@ -46,7 +46,7 @@
   color: #fff;
   background:
     radial-gradient(circle at 18% 92%, rgba(161, 218, 204, .18), transparent 35%),
-    linear-gradient(165deg, #006fd2, var(--brand-green) 48%, var(--brand-green-active));
+    linear-gradient(165deg, #377757, var(--brand-green) 48%, var(--brand-green-active));
   box-shadow: -10px 0 34px rgba(25, 70, 49, .12);
 }
 
@@ -300,7 +300,7 @@
   color: #fff;
   background:
     radial-gradient(circle at 12% 100%, rgba(161, 218, 204, .27), transparent 34%),
-    linear-gradient(120deg, var(--brand-green-active), var(--brand-green) 62%, #006ccb);
+    linear-gradient(120deg, var(--brand-green-active), var(--brand-green) 62%, #3e7f60);
   border-radius: 22px;
   box-shadow: 0 18px 42px rgba(31, 79, 56, .14);
 }
@@ -323,7 +323,7 @@
 }
 
 .hero-panel .eyebrow {
-  color: #fff;
+  color: var(--brand-mint-source);
 }
 
 .hero-panel h2 {
@@ -358,7 +358,7 @@
   color: #fff;
   background: var(--brand-green);
   border: 1px solid var(--brand-green);
-  box-shadow: 0 10px 22px rgba(0, 118, 223, .2);
+  box-shadow: 0 10px 22px rgba(47, 111, 80, .2);
 }
 
 .hero-panel .primary {
@@ -371,7 +371,7 @@
   background: var(--brand-green-hover);
   border-color: var(--brand-green-hover);
   transform: translateY(-1px);
-  box-shadow: 0 13px 26px rgba(0, 118, 223, .25);
+  box-shadow: 0 13px 26px rgba(47, 111, 80, .25);
 }
 
 .hero-panel .primary:hover:not(:disabled) {
@@ -523,7 +523,7 @@
   flex: 0 0 38px;
   display: grid;
   place-items: center;
-  color: var(--brand-green-active);
+  color: var(--brand-green);
   background: var(--brand-mint-soft);
   border-radius: 11px;
   font-size: 10px;
@@ -715,7 +715,7 @@
 }
 
 .action:hover {
-  color: var(--brand-green-active);
+  color: var(--brand-green);
   background: var(--brand-mint-soft);
   border-color: var(--brand-green);
 }

@@ -13,7 +13,7 @@
   color: #fff;
   background:
     radial-gradient(circle at 12% 100%, rgba(161, 218, 204, .24), transparent 34%),
-    linear-gradient(125deg, var(--brand-green-active), var(--brand-green) 68%, #006fd2);
+    linear-gradient(125deg, var(--brand-green-active), var(--brand-green) 68%, #3b7a5c);
   border-radius: 20px;
   box-shadow: 0 15px 36px rgba(35, 83, 60, .14);
 }
@@ -30,7 +30,7 @@
 }
 
 .welcome-card .eyebrow {
-  color: #fff;
+  color: var(--brand-mint-source);
 }
 
 .welcome-card h2 {
@@ -83,7 +83,7 @@
   display: grid;
   place-items: center;
   margin-bottom: 14px;
-  color: var(--brand-green-active);
+  color: var(--brand-green);
   background: var(--brand-mint-soft);
   border-radius: 12px;
 }
@@ -359,7 +359,7 @@
 }
 
 .salary-card .eyebrow {
-  color: #fff;
+  color: var(--brand-mint-source);
 }
 
 .salary-card > span {

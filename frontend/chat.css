@@ -102,7 +102,7 @@
   display: inline-flex;
   align-items: center;
   padding: 8px 12px;
-  color: var(--brand-green-active);
+  color: var(--brand-green);
   background: var(--brand-mint-soft);
   border: 1px solid var(--border-strong);
   border-radius: 11px;
@@ -340,7 +340,7 @@
   background: var(--brand-green);
   border: 0;
   border-radius: 13px;
-  box-shadow: 0 10px 22px rgba(0, 118, 223, .2);
+  box-shadow: 0 10px 22px rgba(47, 111, 80, .2);
   cursor: pointer;
   transition: background .2s ease, transform .2s ease;
 }
