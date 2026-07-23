@@ -13,7 +13,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from app import config, index_store
+from app import config, index_store, kb_v2
 from app.admissions import AdmissionCatalog, AdmissionResolution
 from app.chunking import (
     ChunkRecord,
@@ -50,6 +50,12 @@ class UploadedFilesStore:
         self._bm25: dict = {}     # {collection_name: (BM25, chunks_ref)} — lazy
         self._chunk_doc_indexes: dict = {}  # {collection_name: [raw_doc_index, ...]}
         self._chunk_records: dict[str, list[ChunkRecord]] = {}
+        # مسار iug_kb_v2: نصا البحث (retrieval_text) بمحاذاة مقاطع الدليل
+        # (evidence_text في self._chunks) + خرائط chunk→metadata للسجل.
+        self._search_texts: dict[str, list[str]] = {}
+        self._v2_meta: dict[str, list[dict]] = {}
+        self._v2_level_by_chunk: dict[str, dict[str, str]] = {}
+        self._v2_canonical_by_chunk: dict[str, dict[str, str]] = {}
         self._admissions = AdmissionCatalog()
         self._state_lock = RLock()
         self._load_errors: dict[str, str] = {}
@@ -137,21 +143,43 @@ class UploadedFilesStore:
 
     def _build_generation(self, collection_name: str, docs: list[dict]) -> dict:
         """Build dense+lexical state without mutating the active generation."""
-        if config.HIERARCHICAL_CHUNKING_ENABLED:
-            records = build_contextual_uploaded_chunk_records(docs, collection_name)
-            chunks = [record.text for record in records]
-            doc_indexes = [record.doc_index for record in records]
+        if kb_v2.is_v2_payload(docs):
+            # ── مسار iug_kb_v2: سجلات canonical → إسقاط استرجاع حتمي ──
+            # يتحقق من الحقول الإلزامية (ValueError برسالة واضحة عند سجل
+            # فاسد)، يستبعد غير النشط (draft/archived/…)، ويبني نصين لكل
+            # سجل: retrieval_text (يُبنى منه Embedding+BM25) وevidence_text
+            # (ما يراه نموذج الإجابة). المحاذاة 1:1 تُبقي عقد hybrid_rank:
+            # الدرجات تُحسب من نص البحث وتُنتقى بها مقاطع الدليل.
+            projection = kb_v2.build_projection(docs, collection_name)
+            if not projection:
+                raise ValueError(
+                    "ملف iug_kb_v2 بلا أي سجل active قابل للفهرسة"
+                )
+            chunks = [item.evidence_text for item in projection]
+            search_texts = [item.retrieval_text for item in projection]
+            doc_indexes = [item.doc_index for item in projection]
+            records: list[ChunkRecord] = []
+            v2_meta = [item.metadata for item in projection]
+            index_key = _index_name(collection_name, version="kb2")
         else:
-            chunks, doc_indexes = build_uploaded_chunks_with_doc_indexes(docs, collection_name)
-            records = []
+            if config.HIERARCHICAL_CHUNKING_ENABLED:
+                records = build_contextual_uploaded_chunk_records(docs, collection_name)
+                chunks = [record.text for record in records]
+                doc_indexes = [record.doc_index for record in records]
+            else:
+                chunks, doc_indexes = build_uploaded_chunks_with_doc_indexes(docs, collection_name)
+                records = []
+            search_texts = chunks
+            v2_meta = []
+            index_key = _index_name(collection_name)
         if not chunks:
             raise ValueError("no searchable chunks")
         new_index = index_store.build_or_load(
-            _index_name(collection_name), chunks, build_index
+            index_key, search_texts, build_index
         )
         if len(new_index) != len(chunks):
             raise RuntimeError("embedding matrix length mismatch")
-        new_bm25 = BM25(chunks)
+        new_bm25 = BM25(search_texts)
         if len(new_bm25.scores("الجامعة")) != len(chunks):
             raise RuntimeError("BM25 warm-up length mismatch")
         if chunks and len(
@@ -164,6 +192,8 @@ class UploadedFilesStore:
             "bm25": new_bm25,
             "doc_indexes": doc_indexes,
             "records": records,
+            "search_texts": search_texts,
+            "v2_meta": v2_meta,
         }
 
     def _record_generation_failure(
@@ -197,6 +227,10 @@ class UploadedFilesStore:
             self._bm25.pop(collection_name, None)
             self._chunk_doc_indexes.pop(collection_name, None)
             self._chunk_records.pop(collection_name, None)
+            self._search_texts.pop(collection_name, None)
+            self._v2_meta.pop(collection_name, None)
+            self._v2_level_by_chunk.pop(collection_name, None)
+            self._v2_canonical_by_chunk.pop(collection_name, None)
             self._load_errors.pop(collection_name, None)
             self._refresh_errors.pop(collection_name, None)
             self._admissions.remove_collection(
@@ -232,6 +266,28 @@ class UploadedFilesStore:
                 self._chunk_records[collection_name] = records
             else:
                 self._chunk_records.pop(collection_name, None)
+            search_texts = generation.get("search_texts") or chunks
+            if search_texts is not chunks:
+                self._search_texts[collection_name] = search_texts
+            else:
+                self._search_texts.pop(collection_name, None)
+            v2_meta = generation.get("v2_meta") or []
+            if v2_meta:
+                self._v2_meta[collection_name] = v2_meta
+                self._v2_level_by_chunk[collection_name] = {
+                    chunk: meta["degree_level"]
+                    for chunk, meta in zip(chunks, v2_meta)
+                    if meta.get("degree_level")
+                }
+                self._v2_canonical_by_chunk[collection_name] = {
+                    chunk: str(meta["canonical_id"])
+                    for chunk, meta in zip(chunks, v2_meta)
+                    if meta.get("canonical_id")
+                }
+            else:
+                self._v2_meta.pop(collection_name, None)
+                self._v2_level_by_chunk.pop(collection_name, None)
+                self._v2_canonical_by_chunk.pop(collection_name, None)
             self._load_errors.pop(collection_name, None)
             self._refresh_errors.pop(collection_name, None)
         log.info("✅ Indexed uploaded file '%s' (%d chunks).", collection_name, len(chunks))
@@ -252,6 +308,11 @@ class UploadedFilesStore:
                 cleaned.append(item_copy)
             else:
                 cleaned.append({"value": item})
+        # تحقق iug_kb_v2 قبل أي بناء: سجل فاسد يرفض الملف كاملاً بـValueError
+        # واضحة (رقم السجل + الحقل الناقص) تصل الأدمن كما هي عبر 400 —
+        # لا تُبتلع في رسالة الفهرسة العامة.
+        if kb_v2.is_v2_payload(cleaned):
+            kb_v2.validate_records(cleaned)
         # Build the entire next generation before touching the live Mongo
         # collection. During this potentially slow embeddings call both the
         # database and runtime continue serving the previous version.
@@ -297,6 +358,10 @@ class UploadedFilesStore:
             self._bm25.pop(collection_name, None)
             self._chunk_doc_indexes.pop(collection_name, None)
             self._chunk_records.pop(collection_name, None)
+            self._search_texts.pop(collection_name, None)
+            self._v2_meta.pop(collection_name, None)
+            self._v2_level_by_chunk.pop(collection_name, None)
+            self._v2_canonical_by_chunk.pop(collection_name, None)
             self._load_errors.pop(collection_name, None)
             self._refresh_errors.pop(collection_name, None)
             self._admissions.remove_collection(collection_name, rebuild=False)
@@ -305,6 +370,7 @@ class UploadedFilesStore:
         # (بنفس الاسم المسبوق الذي خُزّنت به — الاسم المجرد كان يحذف مفتاحاً خاطئاً)
         index_store.delete(_index_name(collection_name, version="v1"))
         index_store.delete(_index_name(collection_name, version="v2"))
+        index_store.delete(_index_name(collection_name, version="kb2"))
         return True
 
     def reload(self, collection_name: str) -> bool:
@@ -365,6 +431,51 @@ class UploadedFilesStore:
                     index_store.fingerprint(self._chunks[name]).encode("ascii")
                 )
             return digest.hexdigest()
+
+    def degree_level_of(self, chunk: str) -> Optional[str]:
+        """مرحلة المقطع من metadata سجله (مسار v2) — bachelor/masters/phd.
+
+        ملفات v2 تخلط المراحل في ملف واحد فلا يصلح اسم الملف دليلاً؛
+        chatbot._chunk_level يسأل هنا أولاً ثم يسقط لاسم الملف للقديم."""
+        with self._state_lock:
+            for level_map in self._v2_level_by_chunk.values():
+                level = level_map.get(chunk)
+                if level:
+                    return level
+        return None
+
+    def canonical_id_of(self, chunk: str) -> Optional[str]:
+        """معرّف السجل القانوني للمقطع (مسار v2) — يُستخدم لإزالة التكرار."""
+        with self._state_lock:
+            for id_map in self._v2_canonical_by_chunk.values():
+                canonical_id = id_map.get(chunk)
+                if canonical_id:
+                    return canonical_id
+        return None
+
+    def _dedupe_by_canonical(
+        self, candidates: List[RetrievalCandidate]
+    ) -> List[RetrievalCandidate]:
+        """سجل canonical واحد لا يحتل النتائج بأكثر من مقطع: نُبقي الأعلى
+        ترتيباً لكل canonical_id. المقاطع القديمة (بلا معرّف) لا تُمس."""
+        with self._state_lock:
+            id_maps = list(self._v2_canonical_by_chunk.values())
+        if not id_maps:
+            return candidates
+        seen: set[str] = set()
+        result: List[RetrievalCandidate] = []
+        for candidate in candidates:
+            canonical_id = None
+            for id_map in id_maps:
+                canonical_id = id_map.get(candidate.text)
+                if canonical_id:
+                    break
+            if canonical_id:
+                if canonical_id in seen:
+                    continue
+                seen.add(canonical_id)
+            result.append(candidate)
+        return result
 
     def candidate_metadata_for_chunks(self, chunks: List[str]) -> list[dict]:
         with self._state_lock:
@@ -572,7 +683,11 @@ class UploadedFilesStore:
                 index = None
             cached_bm25 = self._bm25.get(collection_name)
             if cached_bm25 is None or cached_bm25[1] is not all_chunks:
-                cached_bm25 = (BM25(all_chunks), all_chunks)
+                # لملفات v2 يُبنى BM25 من نص البحث المحشو لا من نص الدليل.
+                cached_bm25 = (
+                    BM25(self._search_texts.get(collection_name, all_chunks)),
+                    all_chunks,
+                )
                 self._bm25[collection_name] = cached_bm25
             lexical_index = cached_bm25[0]
         q_vec = embed_query(question) if index is not None else None
@@ -631,7 +746,10 @@ class UploadedFilesStore:
             for name, chunks in sorted(self._chunks.items()):
                 cached_bm25 = self._bm25.get(name)
                 if cached_bm25 is None or cached_bm25[1] is not chunks:
-                    cached_bm25 = (BM25(chunks), chunks)
+                    # لملفات v2 يُبنى BM25 من نص البحث المحشو لا من الدليل.
+                    cached_bm25 = (
+                        BM25(self._search_texts.get(name, chunks)), chunks
+                    )
                     self._bm25[name] = cached_bm25
                 snapshot.append(
                     (name, chunks, self._indexes.get(name), cached_bm25[0])
@@ -662,6 +780,7 @@ class UploadedFilesStore:
             candidates = hybrid_candidates(
                 pool_chunks, dense, lexical, top_k, threshold
             )
+            candidates = self._dedupe_by_canonical(candidates)
             has_usable_index = any(
                 name in permitted
                 and index is not None

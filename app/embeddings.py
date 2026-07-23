@@ -6,6 +6,7 @@ cosine similarity against a normalized query reduces to a dot product.
 """
 
 import hashlib
+import time
 from typing import List
 
 import numpy as np
@@ -72,16 +73,63 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     return np.array(vectors, dtype=np.float32)
 
 
+def _estimated_tokens(texts: List[str]) -> int:
+    """تقدير توكنات Jina للنص العربي — مقيس حياً: 177 ألف حرف ≈ 135 ألف توكن."""
+    return int(sum(len(t) for t in texts) * 0.8)
+
+
+def _is_rate_limited(exc: UpstreamServiceError) -> bool:
+    details = getattr(exc, "details", None) or {}
+    return details.get("status") == 429
+
+
 def build_index(chunks: List[str]) -> np.ndarray:
-    """Embed all chunks in batches and L2-normalize each row."""
+    """Embed all chunks in batches and L2-normalize each row.
+
+    الملفات الكبيرة (مئات المقاطع) كانت تنفجر على حدّ Jina المجاني
+    (100 ألف توكن/دقيقة → HTTP 429 حتمي، ثبت حياً مع 520 مقطعاً): نكبح
+    الإرسال تحت ميزانية `EMBED_TPM_BUDGET` توكن/دقيقة، وعند 429 رغم ذلك
+    ننتظر نافذة كاملة ونعيد الدفعة بدل إفشال الفهرسة كلها.
+    """
     if not chunks:
         return np.array([], dtype=np.float32)
     batch_size = config.EMBED_BATCH_SIZE
+    budget = config.EMBED_TPM_BUDGET
+    window_start = time.monotonic()
+    window_tokens = 0
     all_embeddings = []
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i:i + batch_size]
+        estimated = _estimated_tokens(batch)
+        if budget and window_tokens and window_tokens + estimated > budget:
+            wait = 62 - (time.monotonic() - window_start)
+            if wait > 0:
+                log.info(
+                    "⏳ كبح التضمين: بلغنا ~%d توكن في النافذة — انتظار %.0f ثانية "
+                    "(دفعة %d/%d).",
+                    window_tokens, wait, i // batch_size + 1,
+                    (len(chunks) + batch_size - 1) // batch_size,
+                )
+                time.sleep(wait)
+            window_start = time.monotonic()
+            window_tokens = 0
+        window_tokens += estimated
         log.debug("Embedding batch %d (%d chunks) …", i // batch_size + 1, len(batch))
-        all_embeddings.append(embed_texts(batch))
+        for attempt in range(3):
+            try:
+                all_embeddings.append(embed_texts(batch))
+                break
+            except UpstreamServiceError as exc:
+                if attempt < 2 and _is_rate_limited(exc):
+                    log.warning(
+                        "⚠️ حدّ معدل التضمين (429) — انتظار 65 ثانية ثم إعادة "
+                        "الدفعة (محاولة %d/3).", attempt + 2,
+                    )
+                    time.sleep(65)
+                    window_start = time.monotonic()
+                    window_tokens = estimated
+                else:
+                    raise
     result = np.vstack(all_embeddings) if all_embeddings else np.array([], dtype=np.float32)
     norms = np.linalg.norm(result, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1, norms)

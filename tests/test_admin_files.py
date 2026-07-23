@@ -181,9 +181,14 @@ class TestDeleteLeavesNoOrphans(unittest.TestCase):
              patch("app.uploaded_files.index_store.delete") as purge:
             store.delete("ملف")
         # بنفس المفتاح المسبوق الذي خُزّن به — الاسم المجرد ترك يتيمة سابقاً
+        # (kb2 هو مفتاح فهرس ملفات iug_kb_v2 — يُطهَّر مع أخويه)
         self.assertEqual(
             purge.call_args_list,
-            [call("uploaded::v1::ملف"), call("uploaded::v2::ملف")],
+            [
+                call("uploaded::v1::ملف"),
+                call("uploaded::v2::ملف"),
+                call("uploaded::kb2::ملف"),
+            ],
         )
         self.assertNotIn("ملف", store._chunks)
 
