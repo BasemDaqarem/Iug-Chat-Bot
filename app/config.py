@@ -142,7 +142,9 @@ RERANK_URL = os.getenv("RERANK_URL", "https://api.jina.ai/v1/rerank")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "jina-reranker-v2-base-multilingual")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
 # fail-open سريع: إن لم يجب المزود ضمن الميزانية نستخدم ترتيب RRF الموجود.
-RERANK_TIMEOUT_SECONDS = float(os.getenv("RERANK_TIMEOUT_SECONDS", "2.5"))
+# 2.5ث كانت أقصر من زمن نداء Jina rerank الواقعي (قياس حي: يتجاوز 5ث أحياناً)
+# فكان الريرانكر «مفعّلاً» لكنه يفشل-ويفتح بصمت في أغلب النداءات — بلا أثر.
+RERANK_TIMEOUT_SECONDS = float(os.getenv("RERANK_TIMEOUT_SECONDS", "8"))
 RERANK_CIRCUIT_FAILURES = int(os.getenv("RERANK_CIRCUIT_FAILURES", "2"))
 RERANK_CIRCUIT_COOLDOWN_SECONDS = float(
     os.getenv("RERANK_CIRCUIT_COOLDOWN_SECONDS", "60")
