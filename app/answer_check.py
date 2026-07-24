@@ -1149,6 +1149,35 @@ def branch_exclusivity_overclaim(
     return False
 
 
+def question_echo_answer(question: str, answer: str) -> bool:
+    """جوابٌ هو صدى للسؤال نفسه (أو سؤال مضاد) بلا أي محتوى معلوماتي.
+
+    ثبت حياً في اختبار البنك السهل: «من وين أنزل كتب المواد؟» أُجيب بـ
+    «من أين تُنزل كتب المواد والمساقات؟» — النموذج ردّد السؤال ومرّ من كل
+    الفحوص لأنه لا يحوي رقماً ولا رابطاً يُدقَّق. الكشف بنيوي:
+    جواب قصير + استفهامي/مطابق لتوكنات السؤال + بلا مضمون زائد."""
+    normalized_answer = normalize_arabic(answer).strip()
+    if not normalized_answer or len(normalized_answer) > 220:
+        return False
+    normalized_question = normalize_arabic(question).strip()
+    if not normalized_question:
+        return False
+    answer_tokens = {t for t in normalized_answer.replace("؟", " ").split() if len(t) > 2}
+    question_tokens = {t for t in normalized_question.replace("؟", " ").split() if len(t) > 2}
+    if not answer_tokens:
+        # جواب بلا توكنات ذات معنى ليس «صدى» — تعالجه فحوص أخرى، ولا نعطّل
+        # الأجوبة المحاكية القصيرة في الاختبارات.
+        return False
+    novel = answer_tokens - question_tokens
+    overlap = len(answer_tokens & question_tokens) / len(answer_tokens)
+    interrogative = answer.strip().endswith("؟") or any(
+        normalized_answer.startswith(mark)
+        for mark in ("من اين", "ما هو", "ما هي", "كيف", "هل ", "متي", "لماذا", "شو ")
+    )
+    # صدى: تطابق عالٍ مع توكنات السؤال وأقل من ثلاث كلمات جديدة ذات معنى
+    return interrogative and overlap >= 0.6 and len(novel) < 3
+
+
 def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
              asked_level: str | None, question: str = "",
              entity_terms: Iterable[str] = (),
@@ -1156,6 +1185,12 @@ def problems(answer: str, *, sources: Iterable[str], excluded: Iterable[str],
              retrieval_degraded: bool = False) -> List[str]:
     """قائمة مشاكل الجواب بصياغة تعليمات تصحيحية جاهزة للبرومت — فارغة = سليم."""
     source_list = list(sources)
+    if question and question_echo_answer(question, answer):
+        return [
+            "جوابك مجرد إعادة صياغة للسؤال بلا أي معلومة — أجب من المقاطع "
+            "المعطاة بمعلومة فعلية، وإن لم تجد الدليل فقل ذلك صراحة ووجّه "
+            "السائل للجهة المختصة."
+        ]
     # السؤال نفسه يسند رقماً كرره المستخدم، لكنه ليس وثيقة تسند رابط اتصال
     # أو تاريخاً جامعياً جديداً. أزل نسخة السؤال من فحوص الحقائق الدقيقة.
     evidence = [source for source in source_list if not question or source != question]

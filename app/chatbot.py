@@ -2577,9 +2577,16 @@ class IUGChatbot:
             result.conflicts = _conflicts_relevant_to_plan(
                 plan, result.conflicts
             )
-            if result.resolved_conflicts:
+            # الحسم بالحداثة يخضع لبوابة الصلة نفسها: الحسومات العامة
+            # (كيان global كالتواصل/المصدر) كانت تُحقن في **كل** سؤال — حتى
+            # «متى تأسست الجامعة؟» — فتحتل مقاعد أولى من السياق ضجيجاً
+            # (ثبت في اختبار الاستخراج السهل على كل أسئلة الدفعة الأولى).
+            relevant_resolutions = _conflicts_relevant_to_plan(
+                plan, result.resolved_conflicts
+            )
+            if relevant_resolutions:
                 lines = []
-                for conflict in result.resolved_conflicts:
+                for conflict in relevant_resolutions:
                     lines.append(
                         f"{conflict['canonical_field']} | {conflict['entity']} | "
                         f"القيمة المعتمدة: {conflict['selected_value']} | "
@@ -2598,10 +2605,10 @@ class IUGChatbot:
                 ]
                 result.chunks = suppress_rejected_conflict_values(
                     result.chunks,
-                    result.resolved_conflicts,
+                    relevant_resolutions,
                     kept_metadata,
                 )
-            recency_resolutions[:] = result.resolved_conflicts
+            recency_resolutions[:] = relevant_resolutions
             merged = list(dict.fromkeys([
                 *authoritative,
                 *result.chunks,

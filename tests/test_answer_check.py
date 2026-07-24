@@ -660,3 +660,35 @@ class TestReranker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQuestionEchoAnswer(unittest.TestCase):
+    """جواب-الصدى: النموذج يعيد السؤال بصيغة سؤال — يُرفض ويُعاد التوليد."""
+
+    def test_echo_answer_detected(self):
+        self.assertTrue(answer_check.question_echo_answer(
+            "من وين أنزل كتب المواد والمساقات؟",
+            "من أين تُنزل كتب المواد والمساقات؟",
+        ))
+
+    def test_real_answer_not_flagged(self):
+        self.assertFalse(answer_check.question_echo_answer(
+            "من وين أنزل كتب المواد والمساقات؟",
+            "يوفر مدرسو المساقات نسخاً إلكترونية من الكتب داخل صفحة المساق "
+            "على منصة المودل ليحمّلها الطلبة مباشرة.",
+        ))
+
+    def test_short_direct_answer_not_flagged(self):
+        self.assertFalse(answer_check.question_echo_answer(
+            "متى تأسست الجامعة الإسلامية؟",
+            "تأسست الجامعة الإسلامية بغزة عام 1978.",
+        ))
+
+    def test_problems_rejects_echo(self):
+        issues = answer_check.problems(
+            "كيف أشارك في منتدى النقاش؟",
+            sources=["دليل المودل"], excluded=[], asked_level=None,
+            question="كيف أشارك في منتدى النقاش؟",
+        )
+        self.assertTrue(issues)
+        self.assertIn("إعادة صياغة", issues[0])
